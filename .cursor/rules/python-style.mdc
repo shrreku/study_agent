@@ -1,0 +1,11 @@
+---
+globs: *.py
+---
+Follow the project's Python style rules:
+
+- Use descriptive variable and function names. Avoid 1-2 character names.
+- Prefer type annotations for public APIs and exported functions.
+- Use early returns / guard clauses; keep nesting shallow.
+- Add docstrings for modules and public functions.
+- Don't catch exceptions silently; always handle or re-raise with context.
+- Use `black` formatting and `ruff` lint rules.

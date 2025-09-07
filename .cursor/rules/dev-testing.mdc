@@ -1,0 +1,16 @@
+---
+alwaysApply: true
+---
+# Dev testing & environment norms
+
+- Prefer Docker Compose for local stack; Postgres exposed on host `5433`.
+- Backend auto-loads `.env`; compose forwards both `OPENAI_*` and `AIMLAPI_*`.
+- Quick checks:
+  - Health: `GET /health`
+  - LLM: `GET /api/llm/smoke`
+  - Chunks: `GET /api/resources/{rid}/chunks`
+  - Embeddings: `POST /api/embeddings/upsert`
+  - Prompt trial: `POST /api/llm/preview`
+- Use `Authorization: Bearer test-token` locally (MVP).
+- If chunking shows double slash in path, ensure non-empty `resource_id`.
+- Log only necessary diagnostics; avoid printing full response bodies and secrets.

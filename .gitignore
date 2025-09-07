@@ -1,0 +1,15 @@
+# Ignore markdown except README
+*.md
+!README.md
+!README.MD
+
+# Ignore tickets directory
+/tickets/
+
+# Common sensitive/local files
+.env
+*.log
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store

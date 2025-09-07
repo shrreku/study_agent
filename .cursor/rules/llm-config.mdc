@@ -1,0 +1,12 @@
+---
+globs: backend/**/*.py
+---
+# LLM configuration & prompt guidance
+
+- Use OpenAI-compatible config via env: prefer `OPENAI_API_BASE`/`OPENAI_API_KEY`; fall back to `AIMLAPI_BASE_URL`/`AIMLAPI_API_KEY` if unset.
+- Read models from env: `LLM_MODEL_MINI`, `LLM_MODEL_NANO`. Do not hardcode model names in prompt templates; tailor instructions only.
+- Endpoint resolution: if `base.rstrip('/')` endswith `/v1`, use `/chat/completions`; else use `/v1/chat/completions`.
+- Timeouts & retry: set request timeout to 60s and retry once on transient network/parse errors.
+- JSON-only responses: request strictly structured output; extract JSON from `choices[0].message.content`. If parsing fails, retry with a stricter system message.
+- Never log secrets; when logging responses, truncate bodies (≤512 chars) and redact keys.
+- For smoke tests use `GET /api/llm/smoke`; for iterative prompt testing use `POST /api/llm/preview`.

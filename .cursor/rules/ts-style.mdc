@@ -1,0 +1,4 @@
+---
+globs: *.ts,*.tsx
+---
+Always use semicolons and prefer explicit return types on exported functions. Keep consistent naming for React components (PascalCase) and hooks (useCamelCase). Avoid default exports in shared modules; prefer named exports.
