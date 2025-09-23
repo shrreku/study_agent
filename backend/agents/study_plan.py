@@ -3,6 +3,8 @@ import os
 import logging
 import uuid
 from datetime import date, timedelta, datetime
+from .retrieval import hybrid_search, diversify_by_page
+from llm import call_llm_json
 
 
 def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,7 +75,28 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
             group = prereq_order[i : i + concepts_per_day]
             dt = (start + timedelta(days=day)).isoformat()
             for c in group:
-                todos.append({"date": dt, "minutes": minutes_per_concept, "concept": c, "chunk_refs": []})
+                refs = []
+                try:
+                    rs = hybrid_search(c, k=6)
+                    rs = diversify_by_page(rs, per_page=1)
+                    for r in rs[:3]:
+                        refs.append({"chunk_id": r.get("id"), "snippet": r.get("snippet")})
+                except Exception:
+                    pass
+                # generate a short summary using top snippet
+                summary = ""
+                try:
+                    top_snip = (refs[0]["snippet"] if refs else "")
+                    prompt = (
+                        "Write a short, student-friendly summary (1-2 sentences) for the study topic using the snippet.\n\n"
+                        f"Topic: {c}\n\nSnippet:\n{top_snip}\n\n"
+                        "Return ONLY JSON: {\"summary\": string}."
+                    )
+                    out = call_llm_json(prompt, {"summary": ""})
+                    summary = str(out.get("summary") or "")[:400]
+                except Exception:
+                    summary = ""
+                todos.append({"date": dt, "minutes": minutes_per_concept, "concept": c, "summary": summary, "chunk_refs": refs})
             i += concepts_per_day
             day += 1
     else:
@@ -81,7 +104,27 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
             group = prereq_order[day_idx : day_idx + concepts_per_day]
             dt = (start + timedelta(days=day_idx // concepts_per_day)).isoformat()
             for c in group:
-                todos.append({"date": dt, "minutes": minutes_per_concept, "concept": c, "chunk_refs": []})
+                refs = []
+                try:
+                    rs = hybrid_search(c, k=6)
+                    rs = diversify_by_page(rs, per_page=1)
+                    for r in rs[:3]:
+                        refs.append({"chunk_id": r.get("id"), "snippet": r.get("snippet")})
+                except Exception:
+                    pass
+                summary = ""
+                try:
+                    top_snip = (refs[0]["snippet"] if refs else "")
+                    prompt = (
+                        "Write a short, student-friendly summary (1-2 sentences) for the study topic using the snippet.\n\n"
+                        f"Topic: {c}\n\nSnippet:\n{top_snip}\n\n"
+                        "Return ONLY JSON: {\"summary\": string}."
+                    )
+                    out = call_llm_json(prompt, {"summary": ""})
+                    summary = str(out.get("summary") or "")[:400]
+                except Exception:
+                    summary = ""
+                todos.append({"date": dt, "minutes": minutes_per_concept, "concept": c, "summary": summary, "chunk_refs": refs})
 
     return {"plan_id": str(uuid.uuid4()), "todos": todos}
 

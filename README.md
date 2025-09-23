@@ -37,30 +37,18 @@ curl -u neo4j:neo4j http://localhost:7474/
 
 Environment
 
-Create a `.env` at the repo root with:
+Copy `.env.example` to `.env` at the repo root and adjust as needed:
 
 ```
-OPENAI_API_BASE=
-OPENAI_API_KEY=
-LLM_MODEL_MINI=gpt-5-mini
-LLM_MODEL_NANO=gpt-5-nano
-
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=app
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
-MINIO_ENDPOINT=minio:9000
-MINIO_SECURE=false
-MINIO_BUCKET=resources
-
-REDIS_URL=redis://redis:6379/0
-
-EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
-EMBED_VERSION=all-MiniLM-L6-v2-2025-09
+# see .env.example for a full list; highlights:
+# deterministic local dev/tests
+USE_LLM_MOCK=1
+ALLOW_PREVIEW_TESTS=0
+# retrieval tunables
+RETRIEVAL_SIM_WEIGHT=0.7
+RETRIEVAL_BM25_WEIGHT=0.3
+RETRIEVAL_RESOURCE_BOOST=1.0
+RETRIEVAL_PAGE_PROXIMITY=false
 ```
 
 Development (without Docker):
@@ -82,4 +70,48 @@ cd frontend
 npm install
 npm run dev
 # open http://localhost:3000
+# Agents UI at http://localhost:3000/agents
 ```
+
+## API Notes — Sprint 3 Contract Fixes
+
+- Jobs API
+  - `GET /api/jobs/{job_id}` (auth required) returns `{job_id, status, payload, created_at, updated_at}`.
+  - Quick test:
+    ```bash
+    curl -H "Authorization: Bearer test-token" http://localhost:8000/api/jobs/$JOB_ID | jq
+    ```
+- Daily Quiz response
+  - `POST /api/agent/daily-quiz` now returns both keys for compatibility: `{ quiz: [...], items: [...] }`.
+- Doubt API request
+  - `POST /api/agent/doubt` accepts `question_text` as an alias of `question`.
+
+## Sprint 3 — Retrieval Bench & Smoke
+
+- Bench endpoint
+  - `POST /api/bench/pk` with body:
+    ```json
+    {
+      "queries": ["heat flux", "boundary layer"],
+      "k": 5,
+      "sim_weight": 0.7,
+      "bm25_weight": 0.3,
+      "resource_boost": 1.0,
+      "page_proximity_boost": false
+    }
+    ```
+  - Response includes per-query `ids`, `scores`, and `elapsed_ms`.
+  - Useful env defaults (can be overridden in request): `RETRIEVAL_SIM_WEIGHT`, `RETRIEVAL_BM25_WEIGHT`, `RETRIEVAL_RESOURCE_BOOST`, `RETRIEVAL_PAGE_PROXIMITY`.
+
+- Smoke script
+  - `bash scripts/smoke.sh` exercises:
+    - `GET /health`
+    - `POST /api/llm/preview` (set `USE_LLM_MOCK=1` locally for stability)
+    - `POST /api/admin/recompute-search-tsv`
+    - `POST /api/bench/pk`
+
+## CI
+
+- GitHub Actions workflow runs backend tests deterministically with `USE_LLM_MOCK=1`.
+
+For a fuller, compact OpenAPI, see `tickets/s4-a.md` and the technical overview `docs/overview_and_plan.md`.

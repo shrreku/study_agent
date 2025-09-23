@@ -20,4 +20,11 @@ CREATE TABLE IF NOT EXISTS chunk (
 
 CREATE INDEX IF NOT EXISTS idx_chunk_resource_id ON chunk(resource_id);
 
+-- Vector index for pgvector (ivfflat). Requires ANALYZE and suitable lists for dataset size.
+CREATE INDEX IF NOT EXISTS idx_chunk_embedding
+  ON chunk USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);
+
+-- Full-text search GIN index on search_tsv
+CREATE INDEX IF NOT EXISTS idx_chunk_search ON chunk USING GIN(search_tsv);
+
 

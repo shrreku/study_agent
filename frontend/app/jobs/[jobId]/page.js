@@ -14,7 +14,9 @@ export default function JobStatusPage() {
 
     async function poll() {
       try {
-        const res = await fetch(`http://localhost:8000/api/jobs/${jobId}`)
+        const res = await fetch(`http://localhost:8000/api/jobs/${jobId}`, {
+          headers: { 'Authorization': 'Bearer test-token' },
+        })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const j = await res.json()
         if (cancelled) return

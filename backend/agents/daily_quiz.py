@@ -1,8 +1,8 @@
 from typing import Dict, Any, Optional
 import os
 import logging
-from llm import call_llm_for_tagging
-from .retrieval import hybrid_search
+from llm import call_llm_json
+from .retrieval import hybrid_search, diversify_by_page
 
 
 def _retrieve_chunk_for_concept(concept: str) -> Optional[Dict[str, Any]]:
@@ -43,26 +43,51 @@ def daily_quiz_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         # First try hybrid search with the concept as query
         chunk = None
         try:
-            results = hybrid_search(c, k=1)
+            results = hybrid_search(c, k=8)
+            results = diversify_by_page(results, per_page=1)
             if results:
-                chunk = {"id": results[0].get("id"), "snippet": results[0].get("snippet")}
+                r0 = results[0]
+                chunk = {"id": r0.get("id"), "snippet": r0.get("snippet")}
         except Exception:
             logging.exception("hybrid_search_failed_for_quiz")
             chunk = _retrieve_chunk_for_concept(c)
-        prompt_text = f"Generate one MCQ for the concept: {c}."
+        # Build a strict JSON prompt for MCQ generation
+        prompt_lines = [
+            "Create ONE multiple-choice question grounded in the academic context.",
+            f"Concept: {c}",
+        ]
         if chunk and chunk.get("snippet"):
-            prompt_text += "\nContext snippet:\n" + chunk["snippet"]
+            prompt_lines.append("Context snippet:\n" + str(chunk.get("snippet"))[:800])
+        prompt_lines.append(
+            "Return ONLY JSON with keys: {\"question\":string, \"options\":[string,string,string,string], \"answer_index\":number (0-3), \"explanation\":string}."
+        )
+        prompt = "\n\n".join(prompt_lines)
 
         try:
-            resp = call_llm_for_tagging(prompt_text + "\nReturn JSON with keys question, options, answer_index, source_chunk_id")
-            if "source_chunk_id" not in resp and chunk:
+            default = {
+                "question": f"What best describes {c}?",
+                "options": ["Definition", "Example", "Property", "None of the above"],
+                "answer_index": 0,
+                "explanation": "",
+            }
+            resp = call_llm_json(prompt, default)
+            # attach source and references for grounding
+            if chunk:
                 resp["source_chunk_id"] = chunk.get("id")
+                resp["references"] = [{"chunk_id": chunk.get("id"), "snippet": (chunk.get("snippet") or "")[:200]}]
             items.append(resp)
         except Exception:
             logging.exception("mcq_generation_failed")
-            items.append({"question": f"What is {c}?", "options": ["A","B","C","D"], "answer_index": 0, "source_chunk_id": chunk.get("id") if chunk else None})
+            items.append({
+                "question": f"What is {c}?",
+                "options": ["A", "B", "C", "D"],
+                "answer_index": 0,
+                "explanation": "",
+                "source_chunk_id": chunk.get("id") if chunk else None,
+            })
         if len(items) >= count:
             break
+    # Return only 'quiz' (UI can adapt); 'items' deprecated
     return {"quiz": items}
 
 

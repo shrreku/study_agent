@@ -1,8 +1,8 @@
 from typing import List, Dict, Any
 import os
 import logging
-from llm import call_llm_for_tagging
-from .retrieval import hybrid_search, fetch_chunks_by_ids, search_chunks_simple
+from llm import call_llm_json
+from .retrieval import hybrid_search, fetch_chunks_by_ids, search_chunks_simple, consolidate_adjacent_microchunks, dedup_by_id
 
 
 def _fetch_chunks_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
@@ -62,7 +62,8 @@ def _search_chunks_simple(q: str, k: int = 5) -> List[Dict[str, Any]]:
 
 
 def doubt_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
-    question = payload.get("question") or payload.get("q") or ""
+    # Accept multiple aliases for question to remain compatible with UI
+    question = payload.get("question") or payload.get("question_text") or payload.get("q") or ""
     context_chunk_ids = payload.get("context_chunk_ids") or []
 
     chunks: List[Dict[str, Any]] = []
@@ -70,27 +71,44 @@ def doubt_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         chunks = fetch_chunks_by_ids(context_chunk_ids)
     if not chunks and question:
         try:
-            chunks = hybrid_search(question, 5)
+            chunks = hybrid_search(question, 12)
         except Exception:
-            chunks = search_chunks_simple(question, 5)
+            chunks = search_chunks_simple(question, 12)
+
+    # Micro-chunk adaptation: deduplicate and consolidate adjacent items for context
+    chunks = dedup_by_id(chunks)
+    consolidated = consolidate_adjacent_microchunks(chunks, window=2)
 
     context_lines = []
-    for idx, ch in enumerate(chunks, start=1):
-        context_lines.append(f"[{idx}] {ch.get('snippet','')[:280]} (chunk_id:{ch.get('id')}, page:{ch.get('page_number')})")
+    for idx, group in enumerate(consolidated[:6], start=1):
+        # show first chunk id as representative, include list in citations
+        rep_id = group.get("chunk_ids")[0] if group.get("chunk_ids") else None
+        context_lines.append(f"[{idx}] {group.get('snippet','')[:320]} (chunk_id:{rep_id}, page:{group.get('page_number')})")
     context_text = "\n".join(context_lines)
 
     prompt = (
-        "You are a concise math tutor. Use the context snippets to answer the question.\n"
+        "You are a concise math tutor. Use the provided context snippets to answer the question in a grounded,\n"
+        "helpful way. Keep it short and focused.\n\n"
         f"Question: {question}\n\n"
         f"Context:\n{context_text}\n\n"
-        "Return ONLY JSON: {\"answer\": \"...\", \"citations\":[{\"chunk_id\":\"...\", \"page\": 1, \"snippet\": \"...\"}], \"expanded_steps\": \"...\"}"
+        "Return ONLY JSON with keys: {\"answer\":string, \"citations\":[{\"chunk_id\":string, \"page\":number, \"snippet\":string}], \"expanded_steps\":string}."
     )
 
     try:
-        out = call_llm_for_tagging(prompt)
-        citations = out.get("citations") or []
-        if not citations and chunks:
-            citations = [{"chunk_id": chunks[0].get("id"), "page": chunks[0].get("page_number"), "snippet": chunks[0].get("snippet") }]
+        default_citations = []
+        if consolidated:
+            for g in consolidated[:3]:
+                cid = (g.get("chunk_ids") or [None])[0]
+                default_citations.append({"chunk_id": cid, "page": g.get("page_number"), "snippet": g.get("snippet")})
+        default = {"answer": "", "citations": default_citations, "expanded_steps": ""}
+        out = call_llm_json(prompt, default)
+        citations = out.get("citations") or default_citations
+        if not citations and consolidated:
+            # map consolidated groups to citation objects (first id + snippet)
+            citations = []
+            for g in consolidated[:6]:
+                cid = (g.get("chunk_ids") or [None])[0]
+                citations.append({"chunk_id": cid, "page": g.get("page_number"), "snippet": g.get("snippet")})
         return {
             "answer": out.get("answer", ""),
             "citations": citations,
@@ -99,8 +117,10 @@ def doubt_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         logging.exception("doubt_agent_llm_failed")
         default_citations = []
-        if chunks:
-            default_citations = [{"chunk_id": chunks[0].get("id"), "page": chunks[0].get("page_number"), "snippet": chunks[0].get("snippet")}]
+        if consolidated:
+            for g in consolidated[:3]:
+                cid = (g.get("chunk_ids") or [None])[0]
+                default_citations.append({"chunk_id": cid, "page": g.get("page_number"), "snippet": g.get("snippet")})
         return {"answer": "Sorry, I couldn't generate an answer right now.", "citations": default_citations, "expanded_steps": None}
 
 

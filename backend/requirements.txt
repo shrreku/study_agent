@@ -13,3 +13,6 @@ requests==2.31.0
 sentence-transformers==2.2.2
 # pgvector optional for local installs; skip strict pin to avoid platform issues
 neo4j==5.22.0
+pytest==7.4.4
+# Pin httpx to a version compatible with starlette.testclient used by FastAPI 0.95.x
+httpx==0.23.3

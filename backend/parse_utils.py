@@ -1,17 +1,27 @@
 from pdfminer.high_level import extract_pages
-from pdfminer.layout import LTTextContainer
+from pdfminer.layout import LTTextContainer, LAParams
 from pptx import Presentation
 from docx import Document
 import os
 
 
 def extract_pdf_pages(path: str):
+    laparams = LAParams(
+        line_margin=0.15,   # tighter line grouping
+        char_margin=2.0,    # more tolerant character grouping
+        word_margin=0.1,    # conservative word spacing
+        boxes_flow=None,    # disable automatic layout flow assumptions
+        all_texts=True,
+    )
     pages = []
-    for page_layout in extract_pages(path):
+    for page_layout in extract_pages(path, laparams=laparams):
         page_text = []
         for element in page_layout:
             if isinstance(element, LTTextContainer):
-                page_text.append(element.get_text())
+                txt = element.get_text()
+                # minor cleanup: drop extremely short fragments
+                if txt and len(txt.strip()) >= 2:
+                    page_text.append(txt)
         pages.append("\n".join(page_text))
     return pages
 
