@@ -107,6 +107,30 @@ export default function UploadPage() {
     }
   }
 
+  /* Agent actions: Study Plan, Daily Quiz, Doubt Chat */
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [studyPlan, setStudyPlan] = useState(null)
+  const [dailyQuiz, setDailyQuiz] = useState(null)
+  const [doubtAnswer, setDoubtAnswer] = useState(null)
+  const [examDate, setExamDate] = useState('')
+  const [horizonWeeks, setHorizonWeeks] = useState(2)
+  const [dailyMinutes, setDailyMinutes] = useState(30)
+  const [quizCount, setQuizCount] = useState(5)
+  const [quizConcepts, setQuizConcepts] = useState('')
+  const [doubtQuestion, setDoubtQuestion] = useState('Explain the main concepts in this resource')
+  const [mathEngine, setMathEngine] = useState('none') // 'none' | 'mathjax' | 'katex'
+  // Admin & bench polish
+  const [jobStatus, setJobStatus] = useState(null)
+  const [adminResult, setAdminResult] = useState(null)
+  const [benchQueries, setBenchQueries] = useState('heat flux, boundary layer')
+  const [benchK, setBenchK] = useState(5)
+  const [benchSimWeight, setBenchSimWeight] = useState(0.7)
+  const [benchBm25Weight, setBenchBm25Weight] = useState(0.3)
+  const [benchResourceBoost, setBenchResourceBoost] = useState(1.0)
+  const [benchPageProx, setBenchPageProx] = useState(false)
+  const [benchResult, setBenchResult] = useState(null)
+  const [reindexResult, setReindexResult] = useState(null)
+
   useEffect(() => {
     if (mathEngine === 'katex') {
       const id = 'katex-css'
@@ -208,30 +232,6 @@ export default function UploadPage() {
       setChunksLoading(false)
     }
   }
-
-  /* Agent actions: Study Plan, Daily Quiz, Doubt Chat */
-  const [agentLoading, setAgentLoading] = useState(false)
-  const [studyPlan, setStudyPlan] = useState(null)
-  const [dailyQuiz, setDailyQuiz] = useState(null)
-  const [doubtAnswer, setDoubtAnswer] = useState(null)
-  const [examDate, setExamDate] = useState('')
-  const [horizonWeeks, setHorizonWeeks] = useState(2)
-  const [dailyMinutes, setDailyMinutes] = useState(30)
-  const [quizCount, setQuizCount] = useState(5)
-  const [quizConcepts, setQuizConcepts] = useState('')
-  const [doubtQuestion, setDoubtQuestion] = useState('Explain the main concepts in this resource')
-  const [mathEngine, setMathEngine] = useState('none') // 'none' | 'mathjax' | 'katex'
-  // Admin & bench polish
-  const [jobStatus, setJobStatus] = useState(null)
-  const [adminResult, setAdminResult] = useState(null)
-  const [benchQueries, setBenchQueries] = useState('heat flux, boundary layer')
-  const [benchK, setBenchK] = useState(5)
-  const [benchSimWeight, setBenchSimWeight] = useState(0.7)
-  const [benchBm25Weight, setBenchBm25Weight] = useState(0.3)
-  const [benchResourceBoost, setBenchResourceBoost] = useState(1.0)
-  const [benchPageProx, setBenchPageProx] = useState(false)
-  const [benchResult, setBenchResult] = useState(null)
-  const [reindexResult, setReindexResult] = useState(null)
 
   async function callStudyPlan() {
     if (!resourceId) return
@@ -496,6 +496,7 @@ export default function UploadPage() {
 
       {error && <div style={{ color: 'red', marginTop: 12 }}>{error}</div>}
     </main>
+  )
 }
 
 

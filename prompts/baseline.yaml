@@ -1,0 +1,116 @@
+quiz:
+  mcq: |
+    Create ONE multiple-choice question grounded in the academic context.
+    Concept: {{concept}}
+    Context snippet:
+    {{snippet}}
+    Return ONLY JSON with keys: {"question":string, "options":[string,string,string,string], "answer_index":number, "explanation":string}.
+
+doubt:
+  answer: |
+    You are a concise tutor. Only answer using the provided context.
+    If the context is empty or not relevant to the question, respond exactly with:
+    "I don't know based on the provided materials."
+    Do not use outside knowledge. Do not fabricate.
+    Question: {{question}}
+    Context:
+    {{context}}
+    Return ONLY JSON: {"answer":string, "expanded_steps":string}. Citations will be provided separately by the system.
+
+study:
+  summary: |
+    Write a short, student-friendly summary (1-2 sentences) using the snippet.
+    Topic: {{concept}}
+    Snippet:
+    {{snippet}}
+    Return ONLY JSON: {"summary": string}.
+
+analysis:
+  summary: |
+    Provide a short summary (2-3 sentences) of student's strengths and weaknesses.
+    Strengths: {{strengths}}
+    Weaknesses: {{weaknesses}}
+    Return ONLY JSON: {"summary": string}.
+
+tutor:
+  classify: |
+    You are classifying a student's latest message in a tutoring session.
+    Consider:
+    - The student's text
+    - Prior concept focus (if provided)
+    - Target concepts for the session
+    Return ONLY JSON with keys:
+      {
+        "intent": one of ["question", "answer", "reflection", "off_topic", "greeting", "unknown"],
+        "affect": one of ["confused", "unsure", "engaged", "frustrated", "neutral"],
+        "concept": string (best guess concept or "" if unclear),
+        "confidence": number between 0 and 1,
+        "needs_escalation": boolean
+      }
+    Student message: {{student_message}}
+    Target concepts: {{target_concepts}}
+    Last concept: {{last_concept}}
+
+  explain: |
+    You are an adaptive tutor explaining a concept using only the provided grounded context.
+    Requirements:
+    - Keep tone warm and encouraging.
+    - Use simple steps and highlight key ideas.
+    - If context insufficient, respond with: "Let's review that from your materials first."
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  ask: |
+    You are generating a short formative question grounded in the provided context.
+    - Ask ONE question appropriate for the student's current level.
+    - Prefer short-answer or multiple-choice with 3 options.
+    - Provide the correct answer for instructor use (not shown to student).
+    - If context insufficient, respond with: "Let's review that from your materials first."
+    Return ONLY JSON with keys:
+      {
+        "question": string,
+        "answer": string,
+        "confidence": number between 0 and 1,
+        "options": [string, string, string] OR []
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  hint: |
+    Provide a gentle hint grounded in the provided context without giving the full answer.
+    - Encourage the student to think about the next step.
+    - Mention the specific part of the context that unlocks progress.
+    - If context insufficient, respond with: "Let's review that from your materials first."
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  reflect: |
+    Lead the student in a short reflection grounded in the concept and context.
+    - Ask the student to summarize their understanding or connect to prior knowledge.
+    - Keep it encouraging and brief.
+    - If context insufficient, respond with: "Let's review that from your materials first."
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}

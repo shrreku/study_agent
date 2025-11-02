@@ -12,7 +12,9 @@ from api.agent import router as agent_router
 from api.analytics import router as analytics_router
 from api.metrics_endpoints import router as metrics_router
 from api.bench import router as bench_router
+from api.kg import router as kg_router
 from core.db import ensure_schema
+from kg_pipeline import ensure_neo4j_constraints
 
 load_dotenv(find_dotenv(), override=True)
 
@@ -39,6 +41,7 @@ app.include_router(agent_router)
 app.include_router(analytics_router)
 app.include_router(metrics_router)
 app.include_router(bench_router)
+app.include_router(kg_router)
 
 ## security handled in core.auth; routers declare dependencies
 
@@ -93,6 +96,11 @@ def on_startup():
         ensure_schema()
     except Exception:
         logging.exception("Error ensuring schema on startup")
+
+    try:
+        ensure_neo4j_constraints()
+    except Exception:
+        logging.exception("Error ensuring Neo4j constraints on startup")
 
 
 # Moved: /api/embeddings/upsert is now in api/embeddings.py

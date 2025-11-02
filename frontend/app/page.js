@@ -22,6 +22,8 @@ export default function Home() {
           <li><a href="/agents/quiz">Quiz Agent</a></li>
           <li><a href="/agents/doubt">Doubt Chat</a></li>
           <li><a href="/agents/study-plan">Study Plan</a></li>
+          <li><a href="/agents/analysis">Analysis</a></li>
+          <li><a href="/agents/tutor">Tutor Testing Dashboard</a></li>
         </ul>
       </div>
     </main>

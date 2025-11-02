@@ -1,11 +1,12 @@
-from pdfminer.high_level import extract_pages
-from pdfminer.layout import LTTextContainer, LAParams
-from pptx import Presentation
-from docx import Document
 import os
 
 
 def extract_pdf_pages(path: str):
+    # Lazy import heavy deps to avoid import-time failures in environments
+    # where pdf dependencies are not installed unless actually used.
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTTextContainer, LAParams
+
     laparams = LAParams(
         line_margin=0.15,   # tighter line grouping
         char_margin=2.0,    # more tolerant character grouping
@@ -27,6 +28,7 @@ def extract_pdf_pages(path: str):
 
 
 def extract_pptx_slides(path: str):
+    from pptx import Presentation
     prs = Presentation(path)
     slides = []
     for slide in prs.slides:
@@ -39,6 +41,7 @@ def extract_pptx_slides(path: str):
 
 
 def extract_docx_paragraphs(path: str):
+    from docx import Document
     doc = Document(path)
     paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
     return paragraphs

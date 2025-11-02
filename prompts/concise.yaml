@@ -1,0 +1,30 @@
+quiz:
+  mcq: |
+    Create one grounded MCQ.
+    Concept: {{concept}}
+    Context:
+    {{snippet}}
+    Return JSON only: {"question":string, "options":[string,string,string,string], "answer_index":number, "explanation":string}.
+
+doubt:
+  answer: |
+    Answer only using the provided context. If the context is empty or not relevant to the question, set the answer to "I don't know based on the provided materials." Do not use outside knowledge.
+    Q: {{question}}
+    Context:
+    {{context}}
+    Return JSON only: {"answer":string, "expanded_steps":string}. Citations will be provided separately by the system.
+
+study:
+  summary: |
+    1–2 sentence summary.
+    Topic: {{concept}}
+    Snippet:
+    {{snippet}}
+    Return JSON only: {"summary": string}.
+
+analysis:
+  summary: |
+    Summarize strengths, weaknesses, and next concepts in 2–3 sentences.
+    Strengths: {{strengths}}
+    Weaknesses: {{weaknesses}}
+    Return JSON only: {"summary": string}.

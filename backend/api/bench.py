@@ -17,6 +17,7 @@ class BenchPkRequest(BaseModel):
     bm25_weight: Optional[float] = None
     resource_boost: Optional[float] = None
     page_proximity_boost: Optional[bool] = None
+    resource_id: Optional[str] = None
 
 
 @router.post("/api/bench/pk")
@@ -39,6 +40,7 @@ async def bench_pk(req: BenchPkRequest, token: str = Depends(require_auth)):
                 bm25_weight=req.bm25_weight,
                 resource_boost=req.resource_boost,
                 page_proximity_boost=req.page_proximity_boost,
+                resource_id=req.resource_id,
             )
         except Exception:
             rows = []

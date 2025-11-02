@@ -1,0 +1,209 @@
+{
+  "generated_at": "2025-11-02T17:27:52.057Z",
+  "user_id": "11111111-2222-3333-4444-555555555555",
+  "session_id": "c356811d-363f-4bc5-b578-e053a1ec8441",
+  "resource_id": "",
+  "target_concepts": [
+    "conduction"
+  ],
+  "turns": [
+    {
+      "role": "user",
+      "content": "help me study conduction"
+    },
+    {
+      "role": "tutor",
+      "content": "Using the lumped capacitance method for transient conduction, the object's temperature follows T(t)=T∞+(Ti−T∞)exp(−t/τ). Which expression gives the thermal time constant τ?",
+      "meta": {
+        "actionType": "ask",
+        "confidence": 0.92,
+        "concept": "conduction",
+        "level": "beginner",
+        "learningPath": [
+          "conduction"
+        ],
+        "coldStart": true,
+        "intent": "question",
+        "affect": "engaged",
+        "classificationConfidence": 0.93,
+        "sourceChunks": [
+          "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+          "515b0514-124b-4038-a73d-936a9add783c",
+          "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+          "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+        ],
+        "raw": {
+          "session_id": "c356811d-363f-4bc5-b578-e053a1ec8441",
+          "turn_id": "4726ed42-4f27-4dfb-8451-698cf11fdaad",
+          "turn_index": 0,
+          "response": "Using the lumped capacitance method for transient conduction, the object's temperature follows T(t)=T∞+(Ti−T∞)exp(−t/τ). Which expression gives the thermal time constant τ?",
+          "action_type": "ask",
+          "source_chunk_ids": [
+            "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+            "515b0514-124b-4038-a73d-936a9add783c",
+            "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+            "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+          ],
+          "confidence": 0.92,
+          "intent": "question",
+          "affect": "engaged",
+          "concept": "conduction",
+          "level": "beginner",
+          "learning_path": [
+            "conduction"
+          ],
+          "cold_start": true,
+          "classification_confidence": 0.93
+        }
+      }
+    },
+    {
+      "role": "user",
+      "content": "i dont know. i havent studied it yet"
+    },
+    {
+      "role": "tutor",
+      "content": "First check whether the lumped-capacitance approach is valid: compute the Biot number Bi = h·Lc/k (use a representative length Lc = V/A). If Bi ≪ 0.1, internal temperature gradients are small and the body acts like a single thermal mass. Identify h, surface area A, volume V, density ρ and specific heat cp; the characteristic time scale τ is set by the thermal capacitance divided by the convective conductance (thermal mass ≈ ρVp*c divided by hA). As a rule of thumb, a time on the order of τ reduces the object’s excess temperature to roughly 37% of its initial value above ambient—use these checks to decide if a simple lumped exponential model is appropriate before solving further.",
+      "meta": {
+        "actionType": "hint",
+        "confidence": 0.88,
+        "concept": "conduction",
+        "level": "beginner",
+        "learningPath": [
+          "conduction"
+        ],
+        "coldStart": false,
+        "intent": "reflection",
+        "affect": "unsure",
+        "classificationConfidence": 0.85,
+        "sourceChunks": [
+          "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+          "515b0514-124b-4038-a73d-936a9add783c",
+          "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+          "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+        ],
+        "raw": {
+          "session_id": "c356811d-363f-4bc5-b578-e053a1ec8441",
+          "turn_id": "b10012c8-7e02-4d57-9e39-283b1c42bb8c",
+          "turn_index": 1,
+          "response": "First check whether the lumped-capacitance approach is valid: compute the Biot number Bi = h·Lc/k (use a representative length Lc = V/A). If Bi ≪ 0.1, internal temperature gradients are small and the body acts like a single thermal mass. Identify h, surface area A, volume V, density ρ and specific heat cp; the characteristic time scale τ is set by the thermal capacitance divided by the convective conductance (thermal mass ≈ ρVp*c divided by hA). As a rule of thumb, a time on the order of τ reduces the object’s excess temperature to roughly 37% of its initial value above ambient—use these checks to decide if a simple lumped exponential model is appropriate before solving further.",
+          "action_type": "hint",
+          "source_chunk_ids": [
+            "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+            "515b0514-124b-4038-a73d-936a9add783c",
+            "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+            "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+          ],
+          "confidence": 0.88,
+          "intent": "reflection",
+          "affect": "unsure",
+          "concept": "conduction",
+          "level": "beginner",
+          "learning_path": [
+            "conduction"
+          ],
+          "cold_start": false,
+          "classification_confidence": 0.85
+        }
+      }
+    },
+    {
+      "role": "user",
+      "content": "okay got it"
+    },
+    {
+      "role": "tutor",
+      "content": "For a lumped-capacitance solid undergoing transient conduction, what fraction of the initial temperature difference between the solid and the surrounding fluid remains after one thermal time constant (t=τ)?",
+      "meta": {
+        "actionType": "ask",
+        "confidence": 0.95,
+        "concept": "conduction",
+        "level": "beginner",
+        "learningPath": [
+          "conduction"
+        ],
+        "coldStart": false,
+        "intent": "reflection",
+        "affect": "engaged",
+        "classificationConfidence": 0.9,
+        "sourceChunks": [
+          "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+          "515b0514-124b-4038-a73d-936a9add783c",
+          "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+        ],
+        "raw": {
+          "session_id": "c356811d-363f-4bc5-b578-e053a1ec8441",
+          "turn_id": "93e6399a-4505-4eb7-81f6-f229276142f2",
+          "turn_index": 2,
+          "response": "For a lumped-capacitance solid undergoing transient conduction, what fraction of the initial temperature difference between the solid and the surrounding fluid remains after one thermal time constant (t=τ)?",
+          "action_type": "ask",
+          "source_chunk_ids": [
+            "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+            "515b0514-124b-4038-a73d-936a9add783c",
+            "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+          ],
+          "confidence": 0.95,
+          "intent": "reflection",
+          "affect": "engaged",
+          "concept": "conduction",
+          "level": "beginner",
+          "learning_path": [
+            "conduction"
+          ],
+          "cold_start": false,
+          "classification_confidence": 0.9
+        }
+      }
+    },
+    {
+      "role": "user",
+      "content": "37%"
+    },
+    {
+      "role": "tutor",
+      "content": "Conduction is heat transfer by microscopic energy exchange driven by temperature gradients (Fourier’s law: q = -k∇T). For a transient problem first check the Biot number Bi = h·Lc/k — if Bi ≪ 0.1 the lumped-capacitance model is valid and the solid’s temperature is nearly uniform; its temperature change is then governed by an ODE with an exponential decay characterized by a thermal time constant τ given by the ratio of stored thermal capacitance to the external heat-transfer rate (τ = ρVc_p/(hA_s)).",
+      "meta": {
+        "actionType": "hint",
+        "confidence": 0.88,
+        "concept": "conduction",
+        "level": "beginner",
+        "learningPath": [
+          "conduction"
+        ],
+        "coldStart": false,
+        "intent": "answer",
+        "affect": "unsure",
+        "classificationConfidence": 0.55,
+        "sourceChunks": [
+          "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+          "515b0514-124b-4038-a73d-936a9add783c",
+          "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+          "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+        ],
+        "raw": {
+          "session_id": "c356811d-363f-4bc5-b578-e053a1ec8441",
+          "turn_id": "b684e885-ec04-4089-894e-b04944c55e4e",
+          "turn_index": 3,
+          "response": "Conduction is heat transfer by microscopic energy exchange driven by temperature gradients (Fourier’s law: q = -k∇T). For a transient problem first check the Biot number Bi = h·Lc/k — if Bi ≪ 0.1 the lumped-capacitance model is valid and the solid’s temperature is nearly uniform; its temperature change is then governed by an ODE with an exponential decay characterized by a thermal time constant τ given by the ratio of stored thermal capacitance to the external heat-transfer rate (τ = ρVc_p/(hA_s)).",
+          "action_type": "hint",
+          "source_chunk_ids": [
+            "33e2cdc0-2fda-432a-a798-81f5e06835e2",
+            "515b0514-124b-4038-a73d-936a9add783c",
+            "e42d9ee0-5cd5-4733-96ad-2856858faa81",
+            "d569ec47-a7a0-41ad-8c5a-d80129d41c4a"
+          ],
+          "confidence": 0.88,
+          "intent": "answer",
+          "affect": "unsure",
+          "concept": "conduction",
+          "level": "beginner",
+          "learning_path": [
+            "conduction"
+          ],
+          "cold_start": false,
+          "classification_confidence": 0.55
+        }
+      }
+    }
+  ]
+}

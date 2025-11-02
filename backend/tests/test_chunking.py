@@ -32,8 +32,8 @@ def test_encode_sentences_and_semantic_split():
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
 
-    import embed as embed_module
-    from chunker import semantic_chunk_sentences
+    from ingestion import embed as embed_module
+    from ingestion.chunker import semantic_chunk_sentences
 
     sentences = [
         "This is the first sentence.",

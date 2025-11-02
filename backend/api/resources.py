@@ -1,6 +1,9 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from typing import Optional, List, Dict, Any
+from itertools import combinations
+from difflib import SequenceMatcher
+import re
 import os
 import io
 import uuid
@@ -12,13 +15,33 @@ from psycopg2.extras import RealDictCursor
 from core.auth import require_auth
 from core.db import get_db_conn
 from core.storage import get_minio_client
-from core.kg import merge_concepts_in_neo4j
+from kg_pipeline import (
+    canonicalize_concept,
+    merge_concepts_in_neo4j,
+    merge_related_concepts,
+    merge_alias,
+    merge_prerequisite_edge,
+    link_chunk_to_section,
+    merge_chunk_figures,
+    merge_chunk_formulas,
+    merge_chunk_formulas_enhanced,
+    merge_chunk_pedagogy_relations,
+    merge_section_node,
+    merge_next_chunk,
+)
 from metrics import MetricsCollector
-from llm import tag_and_extract
-import embed as embed_service
-from chunker import structural_chunk_resource
+from llm import extract_pedagogy_relations, tag_and_extract
+from ingestion import embed as embed_service
+from ingestion.chunker import structural_chunk_resource, enhanced_structural_chunk_resource
 
 router = APIRouter()
+
+
+def _get_chunker():
+    """Choose between enhanced and legacy chunker based on feature flag."""
+    if os.getenv("ENHANCED_CHUNKING_ENABLED", "false").lower() in ("true", "1", "yes"):
+        return enhanced_structural_chunk_resource
+    return structural_chunk_resource
 
 
 @router.post("/api/resources/upload")
@@ -105,6 +128,7 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
             if not r:
                 raise HTTPException(status_code=404, detail="resource not found")
             storage = r["storage_path"]
+            logging.info("reindex_start", extra={"resource_id": resource_id, "storage": storage})
     finally:
         conn.close()
 
@@ -139,7 +163,10 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
             raise HTTPException(status_code=400, detail=f"resource not available locally and MinIO download failed: {e}")
 
     # Compute new structural chunks
-    new_chunks = structural_chunk_resource(local_path)
+    chunker_fn = _get_chunker()
+    logging.info("chunker_selected", extra={"fn": getattr(chunker_fn, "__name__", str(chunker_fn))})
+    new_chunks = chunker_fn(local_path)
+    logging.info("chunker_output", extra={"chunks": len(new_chunks)})
 
     def key_of(c: Dict[str, Any]) -> str:
         return f"{int(c.get('page_number') or 0)}:{int(c.get('source_offset') or 0)}"
@@ -182,6 +209,17 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
     to_insert = [new_map[k] for k in to_insert_keys]
     to_update = [(existing_map[k]["id"], new_map[k]) for k in to_update_keys]
     to_delete_ids = [existing_map[k]["id"] for k in to_delete_keys]
+    logging.info(
+        "reindex_diff",
+        extra={
+            "insert": len(to_insert),
+            "update": len(to_update),
+            "delete": len(to_delete_ids),
+            "unchanged": unchanged,
+            "total_new": len(new_chunks),
+            "total_existing": len(existing_rows),
+        },
+    )
 
     inserted = updated = deleted = 0
 
@@ -196,90 +234,531 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
         finally:
             conn.close()
 
-    def _tag(text: str) -> Dict[str, Any]:
+    def _tag(text: str, hint: Optional[str] = None) -> Dict[str, Any]:
         try:
-            return tag_and_extract(text)
+            data = tag_and_extract(text)
+            if hint and not data.get("chunk_type"):
+                data["chunk_type"] = hint
+            return data
         except Exception:
-            return {"chunk_type": None, "concepts": [], "math_expressions": []}
+            return {"chunk_type": hint or None, "concepts": [], "math_expressions": []}
+
+    def _is_alias_candidate(primary: str, candidate: str) -> bool:
+        primary = (primary or "").strip()
+        candidate = (candidate or "").strip()
+        if not primary or not candidate:
+            return False
+        if primary.lower() == candidate.lower():
+            return False
+        primary_norm = re.sub(r"[^a-z0-9]", "", primary.lower())
+        candidate_norm = re.sub(r"[^a-z0-9]", "", candidate.lower())
+        if primary_norm and primary_norm == candidate_norm:
+            return True
+        ratio = SequenceMatcher(None, primary.lower(), candidate.lower()).ratio()
+        return ratio >= 0.78
+
+    def _update_kg_relations(
+        concepts: List[str],
+        chunk_id: str,
+        snippet: str,
+        resource_id: str,
+        chunk_meta: Dict[str, Any],
+    ) -> tuple[List[str], List[str]]:
+        if not concepts:
+            return [], []
+
+        unique: List[str] = []
+        seen = set()
+        for c in concepts:
+            c_clean = (c or "").strip()
+            if not c_clean:
+                continue
+            key = c_clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(c_clean)
+
+        if not unique:
+            return [], []
+
+        canonical_unique: List[str] = []
+        canonical_seen: set[str] = set()
+        for label in unique:
+            canonical, _display = canonicalize_concept(label)
+            if canonical and canonical not in canonical_seen:
+                canonical_seen.add(canonical)
+                canonical_unique.append(canonical)
+
+        merge_concepts_in_neo4j(unique, chunk_id, snippet, resource_id, chunk_meta)
+
+        alias_merges = 0
+        alias_suppressed = 0
+        processed_alias_pairs: set[tuple[str, str, str]] = set()
+
+        def _record_alias(alias: str, target: str, method: str) -> None:
+            nonlocal alias_merges, alias_suppressed
+            alias_norm = (alias or "").strip()
+            target_norm = (target or "").strip()
+            if not alias_norm or not target_norm:
+                return
+            if alias_norm.lower() == target_norm.lower():
+                return
+            key = (alias_norm.lower(), target_norm.lower(), method)
+            if key in processed_alias_pairs:
+                alias_suppressed += 1
+                return
+            processed_alias_pairs.add(key)
+            try:
+                merge_alias(
+                    alias_norm,
+                    target_norm,
+                    method=method,
+                    evidence_chunk_id=chunk_id,
+                )
+                alias_merges += 1
+            except Exception:
+                logging.exception("kg_alias_merge_failed", extra={"alias": alias_norm, "target": target_norm, "method": method})
+
+        if len(unique) >= 2:
+            pairs = []
+            for a, b in combinations(unique, 2):
+                if a.lower() == b.lower():
+                    continue
+                pairs.append((a, b, 1.0))
+            if pairs:
+                merge_related_concepts(
+                    pairs,
+                    method="chunk_cooccurrence",
+                    evidence_chunk_id=chunk_id,
+                )
+                try:
+                    mc = MetricsCollector.get_global()
+                    mc.increment("kg_related_pairs", len(pairs))
+                except Exception:
+                    pass
+
+            for a, b, _ in pairs:
+                if _is_alias_candidate(a, b):
+                    # choose the canonical target via normalization; default to length heuristic
+                    can_a, _ = canonicalize_concept(a)
+                    can_b, _ = canonicalize_concept(b)
+                    if can_a == can_b:
+                        target = a if len(a) <= len(b) else b
+                        alias = b if target == a else a
+                    else:
+                        target = a
+                        alias = b
+                    _record_alias(alias, target, method="heuristic_alias")
+
+        chunk_type = (chunk_meta or {}).get("chunk_type") or ""
+        if chunk_type in {"definition", "theorem", "procedure"} and len(unique) >= 2:
+            target = unique[0]
+            for prereq in unique[1:]:
+                merge_prerequisite_edge(
+                    prereq,
+                    target,
+                    confidence=0.6,
+                    evidence_chunk_id=chunk_id,
+                    method=f"{chunk_type}_context",
+                )
+
+            if chunk_type == "definition":
+                for alias in unique[1:]:
+                    if _is_alias_candidate(target, alias):
+                        _record_alias(alias, target, method="definition_alias")
+
+        if alias_merges or alias_suppressed:
+            try:
+                mc = MetricsCollector.get_global()
+                if alias_merges:
+                    mc.increment("kg_alias_merges", alias_merges)
+                if alias_suppressed:
+                    mc.increment("kg_alias_suppressed", alias_suppressed)
+            except Exception:
+                pass
+            logging.debug(
+                "kg_alias_summary",
+                extra={
+                    "chunk_id": chunk_id,
+                    "alias_merges": alias_merges,
+                    "alias_suppressed": alias_suppressed,
+                    "concepts": unique,
+                },
+            )
+        pedagogy_payload = {}
+        enable_pedagogy = os.getenv("PEDAGOGY_LLM_ENABLE", "0").lower() in {"1", "true", "yes"}
+        if enable_pedagogy:
+            try:
+                pedagogy_payload = extract_pedagogy_relations(
+                    chunk_meta.get("full_text") or snippet,
+                    {
+                        "chunk_type": chunk_type,
+                        "title": chunk_meta.get("section_title"),
+                        "resource_id": resource_id,
+                    },
+                )
+            except Exception:
+                logging.exception("pedagogy_llm_failed", extra={"chunk_id": chunk_id})
+
+        pedagogy_result = {}
+        if enable_pedagogy and pedagogy_payload:
+            try:
+                pedagogy_result = merge_chunk_pedagogy_relations(
+                    chunk_id,
+                    resource_id,
+                    pedagogy_payload,
+                    chunk_type=chunk_type,
+                    method="llm_pedagogy",
+                )
+            except Exception:
+                logging.exception("pedagogy_merge_failed", extra={"chunk_id": chunk_id})
+
+        if enable_pedagogy:
+            try:
+                mc = MetricsCollector.get_global()
+                mc.increment("pedagogy_llm_requests")
+                if pedagogy_payload:
+                    mc.increment("pedagogy_llm_payload_nonempty")
+                    for key in ("defines", "explains", "exemplifies", "proves", "derives", "figure_links", "prereqs", "evidence"):
+                        items = pedagogy_payload.get(key) or []
+                        if items:
+                            mc.increment(f"pedagogy_llm_{key}_count", len(items))
+                    merged = (pedagogy_result or {}).get("concept_canonicals") or []
+                    if merged:
+                        mc.increment("pedagogy_llm_concepts_merged", len(merged))
+            except Exception:
+                pass
+
+        return unique, canonical_unique
+
+    def _infer_prereqs_from_sequence(resource_id: str, summaries: List[Dict[str, Any]]) -> None:
+        if not summaries:
+            return
+        summaries_sorted = sorted(
+            summaries,
+            key=lambda s: (
+                s.get("page_number") if s.get("page_number") is not None else 0,
+                s.get("source_offset") if s.get("source_offset") is not None else 0,
+            ),
+        )
+        prev_primary: Optional[str] = None
+        prev_chunk: Optional[str] = None
+        for summary in summaries_sorted:
+            concepts_unique = summary.get("concepts_unique") or []
+            if not concepts_unique:
+                if prev_chunk and summary.get("chunk_id"):
+                    merge_next_chunk(prev_chunk, summary.get("chunk_id"), resource_id)
+                    prev_chunk = summary.get("chunk_id")
+                continue
+            primary = concepts_unique[0]
+            if prev_primary and primary and primary.lower() != prev_primary.lower():
+                merge_prerequisite_edge(
+                    prev_primary,
+                    primary,
+                    confidence=0.4,
+                    evidence_chunk_id=summary.get("chunk_id"),
+                    method="chunk_order",
+                )
+            prev_primary = primary
+            if prev_chunk and summary.get("chunk_id"):
+                merge_next_chunk(prev_chunk, summary.get("chunk_id"), resource_id)
+            prev_chunk = summary.get("chunk_id")
+        # ensure final chunk still updates chain if gaps existed
+        if prev_chunk and summaries_sorted:
+            merge_next_chunk(prev_chunk, None, resource_id)
 
     # Inserts
     if to_insert:
         texts = [c.get("full_text") or "" for c in to_insert]
-        tags_list = [_tag(t) for t in texts]
+        tags_list = [_tag(t, c.get("chunk_type_hint")) for c, t in zip(to_insert, texts)]
         vecs = embed_service.embed_texts(texts)
         embed_version = os.getenv("EMBED_VERSION", "all-MiniLM-L6-v2-2025-09")
         conn = get_db_conn()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                sequence_summaries: List[Dict[str, Any]] = []
                 for c, tags, vec in zip(to_insert, tags_list, vecs):
+                    section_title = c.get("section_title") or ""
+                    section_number = c.get("section_number") or ""
+                    section_path = c.get("section_path") or []
+                    section_level = c.get("section_level")
+                    page_start = c.get("page_start") or c.get("page_number")
+                    page_end = c.get("page_end") or c.get("page_number")
+                    token_count = c.get("token_count") or len((c.get("full_text") or "").split())
+                    has_figure = bool(c.get("has_figure"))
+                    has_equation = bool(c.get("has_equation"))
+                    figure_labels = c.get("figure_labels") or []
+                    equation_labels = c.get("equation_labels") or []
+                    caption = c.get("caption")
+                    tags_json = c.get("tags") or []
+                    heading_text = " ".join(filter(None, [section_number, section_title]))
+                    tags_text = " ".join(tags_json)
+                    full_text = c.get("full_text") or ""
+                    text_snippet = c.get("text_snippet") or full_text[:300]
+                    chunk_type = tags.get("chunk_type") or c.get("chunk_type_hint")
+                    chunk_meta = {
+                        "full_text": full_text,
+                        "chunk_type": chunk_type,
+                        "section_path": section_path,
+                        "section_title": section_title,
+                        "section_number": section_number,
+                        "section_level": section_level,
+                        "page_number": c.get("page_number"),
+                    }
                     cur.execute(
                         """
-                        INSERT INTO chunk (id, resource_id, page_number, source_offset, full_text,
-                                           chunk_type, concepts, math_expressions, embedding, embedding_version, created_at, updated_at)
-                        VALUES (uuid_generate_v4(), %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                        INSERT INTO chunk (
+                            id, resource_id, page_number, source_offset, full_text,
+                            chunk_type, concepts, math_expressions, embedding, embedding_version,
+                            created_at, updated_at,
+                            section_title, section_number, section_path, section_level,
+                            page_start, page_end, token_count, has_figure, has_equation,
+                            figure_labels, equation_labels, caption, tags,
+                            text_snippet,
+                            heading_tsv, body_tsv, search_tsv
+                        )
+                        VALUES (
+                            uuid_generate_v4(), %s::uuid, %s, %s, %s,
+                            %s, %s, %s, %s, %s,
+                            now(), now(),
+                            %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s,
+                            %s,
+                            to_tsvector('english', coalesce(%s, '')),
+                            to_tsvector('english', %s),
+                            setweight(to_tsvector('english', coalesce(%s, '')), 'A')
+                                || setweight(to_tsvector('english', %s), 'B')
+                                || setweight(to_tsvector('english', coalesce(%s, '')), 'C')
+                        )
                         RETURNING id::text
                         """,
                         (
                             resource_id,
                             c.get("page_number"),
                             c.get("source_offset"),
-                            c.get("full_text"),
-                            tags.get("chunk_type"),
+                            full_text,
+                            chunk_type,
                             tags.get("concepts"),
                             tags.get("math_expressions"),
                             vec,
                             embed_version,
+                            section_title,
+                            section_number,
+                            section_path,
+                            section_level,
+                            page_start,
+                            page_end,
+                            token_count,
+                            has_figure,
+                            has_equation,
+                            figure_labels,
+                            equation_labels,
+                            caption,
+                            tags_json,
+                            text_snippet,
+                            heading_text,
+                            full_text,
+                            heading_text,
+                            full_text,
+                            tags_text,
                         ),
                     )
                     new_id = cur.fetchone()["id"]
                     try:
                         concepts = tags.get("concepts") or []
-                        if concepts:
-                            merge_concepts_in_neo4j(concepts, new_id, (c.get("full_text") or "")[:160], resource_id)
+                        concepts_unique, concepts_canonical = _update_kg_relations(
+                            concepts,
+                            str(new_id),
+                            text_snippet,
+                            resource_id,
+                            chunk_meta,
+                        )
+                        if concepts_unique:
+                            sequence_summaries.append(
+                                {
+                                    "chunk_id": str(new_id),
+                                    "concepts_unique": concepts_unique,
+                                    "page_number": c.get("page_number"),
+                                    "source_offset": c.get("source_offset"),
+                                }
+                            )
+                        link_chunk_to_section(
+                            str(new_id),
+                            resource_id,
+                            section_path,
+                            section_title,
+                            section_number,
+                            section_level,
+                        )
+                        merge_chunk_figures(
+                            str(new_id),
+                            resource_id,
+                            figure_labels,
+                            concept_canonicals=concepts_canonical,
+                        )
+                        # Use INGEST-04 enhanced formulas if available, otherwise fall back to old tags
+                        if c.get('formulas'):
+                            merge_chunk_formulas_enhanced(
+                                str(new_id),
+                                resource_id,
+                                c.get('formulas'),
+                                concept_canonicals=concepts_canonical,
+                            )
+                        else:
+                            merge_chunk_formulas(
+                                str(new_id),
+                                resource_id,
+                                tags.get("math_expressions"),
+                                concept_canonicals=concepts_canonical,
+                            )
                     except Exception:
                         logging.exception("kg_merge_failed")
             conn.commit()
             inserted = len(to_insert)
         finally:
             conn.close()
+        _infer_prereqs_from_sequence(resource_id, sequence_summaries)
 
     # Updates
     if to_update:
         texts_upd = [c.get("full_text") or "" for (_id, c) in to_update]
-        tags_upd = [_tag(t) for t in texts_upd]
+        tags_upd = [_tag(t, c.get("chunk_type_hint")) for ( _id, c), t in zip(to_update, texts_upd)]
         vecs_upd = embed_service.embed_texts(texts_upd)
         embed_version = os.getenv("EMBED_VERSION", "all-MiniLM-L6-v2-2025-09")
         conn = get_db_conn()
         try:
             with conn.cursor() as cur:
+                sequence_summaries_upd: List[Dict[str, Any]] = []
                 for (chunk_id, c), tags, vec in zip(to_update, tags_upd, vecs_upd):
+                    section_title = c.get("section_title") or ""
+                    section_number = c.get("section_number") or ""
+                    section_path = c.get("section_path") or []
+                    section_level = c.get("section_level")
+                    page_start = c.get("page_start") or c.get("page_number")
+                    page_end = c.get("page_end") or c.get("page_number")
+                    token_count = c.get("token_count") or len((c.get("full_text") or "").split())
+                    has_figure = bool(c.get("has_figure"))
+                    has_equation = bool(c.get("has_equation"))
+                    figure_labels = c.get("figure_labels") or []
+                    equation_labels = c.get("equation_labels") or []
+                    caption = c.get("caption")
+                    tags_json = c.get("tags") or []
+                    heading_text = " ".join(filter(None, [section_number, section_title]))
+                    tags_text = " ".join(tags_json)
+                    full_text = c.get("full_text") or ""
+                    text_snippet = c.get("text_snippet") or full_text[:300]
+                    chunk_type = tags.get("chunk_type") or c.get("chunk_type_hint")
+                    chunk_meta = {
+                        "full_text": full_text,
+                        "chunk_type": chunk_type,
+                        "section_path": section_path,
+                        "section_title": section_title,
+                        "section_number": section_number,
+                        "section_level": section_level,
+                        "page_number": c.get("page_number"),
+                    }
                     cur.execute(
                         """
                         UPDATE chunk
                         SET full_text=%s, chunk_type=%s, concepts=%s, math_expressions=%s,
-                            embedding=%s, embedding_version=%s, updated_at=now()
+                            embedding=%s, embedding_version=%s, updated_at=now(),
+                            section_title=%s, section_number=%s, section_path=%s, section_level=%s,
+                            page_start=%s, page_end=%s, token_count=%s,
+                            has_figure=%s, has_equation=%s, figure_labels=%s, equation_labels=%s,
+                            caption=%s, tags=%s, text_snippet=%s,
+                            heading_tsv=to_tsvector('english', coalesce(%s, '')),
+                            body_tsv=to_tsvector('english', %s),
+                            search_tsv=
+                                setweight(to_tsvector('english', coalesce(%s, '')), 'A')
+                                || setweight(to_tsvector('english', %s), 'B')
+                                || setweight(to_tsvector('english', coalesce(%s, '')), 'C')
                         WHERE id=%s::uuid
                         """,
                         (
-                            c.get("full_text"),
-                            tags.get("chunk_type"),
+                            full_text,
+                            chunk_type,
                             tags.get("concepts"),
                             tags.get("math_expressions"),
                             vec,
                             embed_version,
+                            section_title,
+                            section_number,
+                            section_path,
+                            section_level,
+                            page_start,
+                            page_end,
+                            token_count,
+                            has_figure,
+                            has_equation,
+                            figure_labels,
+                            equation_labels,
+                            caption,
+                            tags_json,
+                            text_snippet,
+                            heading_text,
+                            full_text,
+                            heading_text,
+                            full_text,
+                            tags_text,
                             chunk_id,
                         ),
                     )
                     try:
                         concepts = tags.get("concepts") or []
-                        if concepts:
-                            merge_concepts_in_neo4j(concepts, str(chunk_id), (c.get("full_text") or "")[:160], resource_id)
+                        concepts_unique, concepts_canonical = _update_kg_relations(
+                            concepts,
+                            str(chunk_id),
+                            text_snippet,
+                            resource_id,
+                            chunk_meta,
+                        )
+                        if concepts_unique:
+                            sequence_summaries_upd.append(
+                                {
+                                    "chunk_id": str(chunk_id),
+                                    "concepts_unique": concepts_unique,
+                                    "page_number": c.get("page_number"),
+                                    "source_offset": c.get("source_offset"),
+                                }
+                            )
+                        link_chunk_to_section(
+                            str(chunk_id),
+                            resource_id,
+                            section_path,
+                            section_title,
+                            section_number,
+                            section_level,
+                        )
+                        merge_chunk_figures(
+                            str(chunk_id),
+                            resource_id,
+                            figure_labels,
+                            concept_canonicals=concepts_canonical,
+                        )
+                        # Use INGEST-04 enhanced formulas if available, otherwise fall back to old tags
+                        if c.get('formulas'):
+                            merge_chunk_formulas_enhanced(
+                                str(chunk_id),
+                                resource_id,
+                                c.get('formulas'),
+                                concept_canonicals=concepts_canonical,
+                            )
+                        else:
+                            merge_chunk_formulas(
+                                str(chunk_id),
+                                resource_id,
+                                tags.get("math_expressions"),
+                                concept_canonicals=concepts_canonical,
+                            )
                     except Exception:
                         logging.exception("kg_merge_failed")
             conn.commit()
             updated = len(to_update)
         finally:
             conn.close()
+        _infer_prereqs_from_sequence(resource_id, sequence_summaries_upd)
 
     # Cleanup temp download
     if tmp_download_path:
@@ -368,7 +847,8 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
                     pass
             raise HTTPException(status_code=400, detail=f"resource not available locally and MinIO download failed: {e}")
 
-    chunks = structural_chunk_resource(local_path)
+    chunker_fn = _get_chunker()
+    chunks = chunker_fn(local_path)
 
     # metrics
     try:
@@ -400,13 +880,77 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
                 new_id = cur.fetchone()["id"]
                 try:
                     if concepts:
-                        merge_concepts_in_neo4j(concepts, new_id, c["full_text"][:160], resource_id)
+                        chunk_meta = {
+                            "full_text": c.get("full_text"),
+                            "page_number": c.get("page_number"),
+                            "section_path": c.get("section_path"),
+                            "section_title": c.get("section_title"),
+                            "section_number": c.get("section_number"),
+                            "section_level": c.get("section_level"),
+                            "chunk_type": chunk_type,
+                        }
+                        snippet = (c.get("full_text") or "")[:160]
+                        concepts_unique, concepts_canonical = _update_kg_relations(
+                            concepts,
+                            str(new_id),
+                            snippet,
+                            resource_id,
+                            chunk_meta,
+                        )
+                        if concepts_unique:
+                            chunk.setdefault("_kg_unique", concepts_unique)
+                            chunk.setdefault("_kg_chunk_id", str(new_id))
+                        link_chunk_to_section(
+                            str(new_id),
+                            resource_id,
+                            chunk_meta.get("section_path"),
+                            chunk_meta.get("section_title"),
+                            chunk_meta.get("section_number"),
+                            chunk_meta.get("section_level"),
+                        )
+                        merge_chunk_figures(
+                            str(new_id),
+                            resource_id,
+                            c.get("figure_labels"),
+                            concept_canonicals=concepts_canonical,
+                        )
+                        # Use INGEST-04 enhanced formulas if available, otherwise fall back to old tags
+                        if c.get('formulas'):
+                            merge_chunk_formulas_enhanced(
+                                str(new_id),
+                                resource_id,
+                                c.get('formulas'),
+                                concept_canonicals=concepts_canonical,
+                            )
+                        else:
+                            merge_chunk_formulas(
+                                str(new_id),
+                                resource_id,
+                                tags.get("math_expressions"),
+                                concept_canonicals=concepts_canonical,
+                            )
                 except Exception:
                     logging.exception("kg_merge_failed")
                 inserted += 1
         conn.commit()
     finally:
         conn.close()
+
+    try:
+        summaries = []
+        for c in chunks:
+            if "_kg_unique" in c:
+                summaries.append(
+                    {
+                        "chunk_id": c.get("_kg_chunk_id"),
+                        "concepts_unique": c.get("_kg_unique"),
+                        "page_number": c.get("page_number"),
+                        "source_offset": c.get("source_offset"),
+                    }
+                )
+        _infer_prereqs_from_sequence(resource_id, summaries)
+    except Exception:
+        logging.exception("kg_sequence_prereq_failed")
 
     if tmp_download_path:
         try:

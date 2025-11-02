@@ -5,6 +5,7 @@ import uuid
 from datetime import date, timedelta, datetime
 from .retrieval import hybrid_search, diversify_by_page
 from llm import call_llm_json
+from prompts import get as prompt_get, render as prompt_render
 
 
 def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -67,6 +68,7 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     concepts_per_day = max(1, daily_minutes // minutes_per_concept)
 
     todos: List[Dict[str, Any]] = []
+    resource_id = payload.get("resource_id")
     start = date.today()
     if exam_date and (exam_date - start).days > 0:
         day = 0
@@ -77,7 +79,7 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
             for c in group:
                 refs = []
                 try:
-                    rs = hybrid_search(c, k=6)
+                    rs = hybrid_search(c, k=6, resource_id=resource_id)
                     rs = diversify_by_page(rs, per_page=1)
                     for r in rs[:3]:
                         refs.append({"chunk_id": r.get("id"), "snippet": r.get("snippet")})
@@ -87,11 +89,8 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
                 summary = ""
                 try:
                     top_snip = (refs[0]["snippet"] if refs else "")
-                    prompt = (
-                        "Write a short, student-friendly summary (1-2 sentences) for the study topic using the snippet.\n\n"
-                        f"Topic: {c}\n\nSnippet:\n{top_snip}\n\n"
-                        "Return ONLY JSON: {\"summary\": string}."
-                    )
+                    tmpl = prompt_get("study.summary")
+                    prompt = prompt_render(tmpl, {"concept": c, "snippet": top_snip})
                     out = call_llm_json(prompt, {"summary": ""})
                     summary = str(out.get("summary") or "")[:400]
                 except Exception:
@@ -106,7 +105,7 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
             for c in group:
                 refs = []
                 try:
-                    rs = hybrid_search(c, k=6)
+                    rs = hybrid_search(c, k=6, resource_id=resource_id)
                     rs = diversify_by_page(rs, per_page=1)
                     for r in rs[:3]:
                         refs.append({"chunk_id": r.get("id"), "snippet": r.get("snippet")})
@@ -115,11 +114,8 @@ def study_plan_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
                 summary = ""
                 try:
                     top_snip = (refs[0]["snippet"] if refs else "")
-                    prompt = (
-                        "Write a short, student-friendly summary (1-2 sentences) for the study topic using the snippet.\n\n"
-                        f"Topic: {c}\n\nSnippet:\n{top_snip}\n\n"
-                        "Return ONLY JSON: {\"summary\": string}."
-                    )
+                    tmpl = prompt_get("study.summary")
+                    prompt = prompt_render(tmpl, {"concept": c, "snippet": top_snip})
                     out = call_llm_json(prompt, {"summary": ""})
                     summary = str(out.get("summary") or "")[:400]
                 except Exception:

@@ -15,6 +15,8 @@ import logging
 import requests
 import time
 from metrics import MetricsCollector
+from prompts import active_set as prompts_active_set
+from llm.common import _extract_json_blob, _repair_json  # type: ignore
 
 
 MATH_PATTERNS = [
@@ -36,24 +38,6 @@ def extract_math_expressions(text: str) -> List[str]:
     return found
 
 
-def _extract_json_blob(s: str) -> str:
-    """Extract JSON object from a possibly wrapped string.
-
-    Prefers sentinel markers BEGIN_STRICT_JSON ... END_STRICT_JSON, otherwise
-    strips code fences and returns the first JSON object found.
-    """
-    s = (s or "").strip()
-    # Prefer sentinel markers if present
-    m = re.search(r"BEGIN_STRICT_JSON\s*(\{[\s\S]*\})\s*END_STRICT_JSON", s)
-    if m:
-        return m.group(1)
-    # Strip common markdown code fences
-    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s.strip(), flags=re.IGNORECASE | re.MULTILINE)
-    # Fallback: first JSON object
-    m2 = re.search(r"\{[\s\S]*\}", s)
-    return m2.group(0) if m2 else s
-
-
 def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Dict[str, Any]:
     """Call GPT-5 nano via AimlAPI to get structured JSON tagging output.
 
@@ -71,6 +55,8 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
                 mc.increment("llm_calls_total")
                 mc.increment("llm_mock_calls")
                 mc.timing("llm_elapsed_ms", 0)
+                ps = (os.getenv("PROMPT_SET", "baseline").strip() or "baseline").replace("/", "_")
+                mc.increment(f"llm_calls_total_ps_{ps}")
             except Exception:
                 pass
             return {"chunk_type": "summary", "concepts": ["MockConcept"], "math_expressions": math_list}
@@ -114,10 +100,9 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
                 "\"chunk_type\": one of [definition,theorem,example,exercise,formula,summary,derivation,procedure,fact], "
                 "\"concepts\": array of 1-5 short subject-specific terms (strings), "
                 "\"math_expressions\": array of LaTeX strings (can be empty) }. "
-                "No markdown. No commentary.\n\n"
+                "No markdown. No commentary. Output exactly one JSON object.\n\n"
                 "Text:\n" + input_text + "\n\n"
-                "Wrap your JSON strictly between the tags BEGIN_STRICT_JSON and END_STRICT_JSON.\n"
-                "BEGIN_STRICT_JSON\n{\n  \"chunk_type\": \"summary\",\n  \"concepts\": [],\n  \"math_expressions\": []\n}\nEND_STRICT_JSON"
+                "Wrap the JSON between a single pair of sentinel tags BEGIN_STRICT_JSON and END_STRICT_JSON."
             )
         )
     else:
@@ -337,6 +322,8 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
             model_key = str(model).replace("/", "_")
             mc.increment(f"llm_model_{model_key}_calls")
             mc.timing("llm_elapsed_ms", elapsed_ms)
+            ps = (os.getenv("PROMPT_SET", "baseline").strip() or "baseline").replace("/", "_")
+            mc.increment(f"llm_calls_total_ps_{ps}")
         except Exception:
             pass
         logging.info(
@@ -367,7 +354,6 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
         except NameError:
             pass
         return {"chunk_type": "summary", "concepts": [], "math_expressions": []}
-    
 def tag_and_extract(text: str) -> Dict[str, Any]:
     """High-level function: Use LLM for tagging with strict JSON guidance and fallbacks."""
     return call_llm_for_tagging(text)
@@ -380,6 +366,13 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
     Does not coerce to tagging schema. Honors USE_LLM_MOCK for deterministic dev/tests."""
     try:
         if os.getenv("USE_LLM_MOCK", "0").lower() in ("1", "true", "yes"):
+            ps = (os.getenv("PROMPT_SET", "baseline").strip() or "baseline").replace("/", "_")
+            try:
+                mc = MetricsCollector.get_global()
+                mc.increment("llm_json_calls_total")
+                mc.increment(f"llm_json_calls_total_ps_{ps}")
+            except Exception:
+                pass
             return default
     except Exception:
         pass
@@ -395,28 +388,46 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
         or os.getenv("AIML_KEY")
         or os.getenv("AIMLAPI_KEY")
     )
-    model = os.getenv("LLM_MODEL_MINI", os.getenv("LLM_MODEL_NANO", "openai/gpt-5-mini-2025-08-07"))
+    model = os.getenv("LLM_MODEL_NANO", os.getenv("LLM_MODEL_MINI", "openai/gpt-5-nano-2025-08-07"))
     if not base or not key:
         return default
     base_clean = base.rstrip("/")
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     endpoint = "/chat/completions" if base_clean.endswith("/v1") else "/v1/chat/completions"
     url = base_clean + endpoint
+    # Check if this is a reasoning model (gpt-5, o1, etc.)
+    is_reasoning_model = "gpt-5" in model.lower() or "o1" in model.lower()
+    
+    # Reasoning models need explicit instruction to output in the message
+    if is_reasoning_model:
+        system_msg = "You are a JSON API. You MUST analyze the input and return ONLY valid JSON matching the requested format. Do not engage in conversation. Do not explain. Only output the JSON structure requested."
+    else:
+        system_msg = "Return only minified JSON. No markdown, no fences."
+    
+    # Reasoning models need much more tokens (reasoning + output)
+    if is_reasoning_model:
+        max_tokens = int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800")) * 3  # 3x tokens for reasoning
+    else:
+        max_tokens = int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800"))
+    
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Return only minified JSON. No markdown, no fences."},
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
-        "max_tokens": int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800")),
+        "max_tokens": max_tokens,
         "stream": False,
     }
+    
     try:
         use_json_mode = os.getenv("LLM_RESPONSE_FORMAT_JSON", "1").lower() in ("1", "true", "yes")
     except Exception:
         use_json_mode = True
-    if use_json_mode:
+    
+    # Reasoning models don't support json_object mode and need special handling
+    if not is_reasoning_model and use_json_mode:
         body["response_format"] = {"type": "json_object"}
     t0 = time.time()
     try:
@@ -427,15 +438,74 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         blob = _extract_json_blob(content)
-        parsed = json.loads((blob or "").strip()) if blob else None
+        
+        # Try parsing the extracted JSON
+        if blob:
+            try:
+                parsed = json.loads(blob.strip())
+            except json.JSONDecodeError:
+                # Try repairing the JSON
+                repaired = _repair_json(blob)
+                try:
+                    parsed = json.loads(repaired.strip())
+                except json.JSONDecodeError:
+                    parsed = None
+        else:
+            parsed = None
         if isinstance(parsed, dict):
             try:
                 mc = MetricsCollector.get_global()
                 mc.increment("llm_json_calls_total")
                 mc.timing("llm_elapsed_ms", int((time.time() - t0) * 1000))
+                ps = (os.getenv("PROMPT_SET", "baseline").strip() or "baseline").replace("/", "_")
+                mc.increment(f"llm_json_calls_total_ps_{ps}")
             except Exception:
                 pass
             return parsed
+        # Retry once with ultra-strict sentinel guidance
+        logging.warning("llm_json_parse_failed_first_try; retrying with sentinel-wrapped JSON prompt")
+        retry_body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return ONLY minified JSON. No markdown, no fences, unless specified."},
+                {"role": "user", "content": "Wrap valid JSON strictly between BEGIN_STRICT_JSON and END_STRICT_JSON for: " + prompt + "\nBEGIN_STRICT_JSON {} END_STRICT_JSON"},
+            ],
+            "temperature": 0.0,
+            "max_tokens": int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800")),
+            "stream": False,
+        }
+        if not is_reasoning_model and use_json_mode:
+            retry_body["response_format"] = {"type": "json_object"}
+        resp2 = requests.post(url, headers=headers, json=retry_body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
+        if resp2.status_code != 200:
+            logging.error("llm_json_retry_non_200 status=%s", resp2.status_code)
+            return default
+        data2 = resp2.json()
+        content2 = data2.get("choices", [{}])[0].get("message", {}).get("content", "")
+        blob2 = _extract_json_blob(content2)
+        
+        # Try parsing with repair
+        if blob2:
+            try:
+                parsed2 = json.loads(blob2.strip())
+            except json.JSONDecodeError:
+                repaired2 = _repair_json(blob2)
+                try:
+                    parsed2 = json.loads(repaired2.strip())
+                except json.JSONDecodeError:
+                    parsed2 = None
+        else:
+            parsed2 = None
+        if isinstance(parsed2, dict):
+            try:
+                mc = MetricsCollector.get_global()
+                mc.increment("llm_json_calls_total")
+                mc.timing("llm_elapsed_ms", int((time.time() - t0) * 1000))
+                ps = (os.getenv("PROMPT_SET", "baseline").strip() or "baseline").replace("/", "_")
+                mc.increment(f"llm_json_calls_total_ps_{ps}")
+            except Exception:
+                pass
+            return parsed2
         return default
     except Exception:
         logging.exception("llm_json_call_failed")

@@ -10,7 +10,7 @@ from psycopg2.extras import RealDictCursor
 
 from core.auth import require_auth
 from core.db import get_db_conn
-import embed as embed_service
+from ingestion import embed as embed_service
 
 router = APIRouter()
 

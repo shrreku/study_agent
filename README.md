@@ -115,3 +115,11 @@ npm run dev
 - GitHub Actions workflow runs backend tests deterministically with `USE_LLM_MOCK=1`.
 
 For a fuller, compact OpenAPI, see `tickets/s4-a.md` and the technical overview `docs/overview_and_plan.md`.
+
+## KG-07 — Pedagogy Extraction Wiring
+
+- **LLM extraction** is controlled by `PEDAGOGY_LLM_ENABLE`. When true, ingestion chunks call `extract_pedagogy_relations` (respecting `PEDAGOGY_LLM_MAX_CHARS` / `PEDAGOGY_LLM_MIN_CONF`).
+- **Graph merges** flow through `merge_chunk_pedagogy_relations`, which now creates `DEFINES/EXPLAINS/EXEMPLIFIES/PROVES/DERIVES` edges, figure links, derived formulas, and high-confidence `PREREQUISITE_OF` edges with evidence sentences and confidence scores.
+- **Metrics**: ingestion increments `pedagogy_llm_requests`, `pedagogy_llm_payload_nonempty`, per-field counters (e.g. `pedagogy_llm_defines_count`), and `pedagogy_llm_concepts_merged` for visibility in logs.
+- **Evidence** from the LLM is persisted onto relation properties—`evidence_sentences` / `evidence_confidence` for both chunk relations and prerequisites.
+- **Backfill**: run the upcoming `scripts/kg_backfill_pedagogy.py` (planned) to reprocess existing chunks once the flag is enabled; it will follow the same LLM + merge pipeline in batches.

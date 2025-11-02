@@ -1,13 +1,25 @@
 "use client"
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 export default function StudyPlanPage() {
   const [conceptsText, setConceptsText] = useState('Transient conduction, Lumped capacitance')
   const [dailyMinutes, setDailyMinutes] = useState(30)
   const [examDate, setExamDate] = useState('')
+  const [resourceId, setResourceId] = useState('')
   const [loading, setLoading] = useState(false)
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    // Prefill from `?concepts=...` if present
+    const qp = searchParams?.get('concepts')
+    if (qp && qp.trim()) {
+      setConceptsText(qp)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function generate() {
     setError(null)
@@ -18,6 +30,7 @@ export default function StudyPlanPage() {
       setLoading(true)
       const payload = { target_concepts: concepts, daily_minutes: Number(dailyMinutes) }
       if (examDate) payload.exam_date = examDate
+      if (resourceId) payload.resource_id = resourceId
       const res = await fetch('http://localhost:8000/api/agent/study-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
@@ -40,6 +53,7 @@ export default function StudyPlanPage() {
         <label>Concepts: <input type="text" value={conceptsText} onChange={e => setConceptsText(e.target.value)} style={{ width: 360 }} /></label>
         <label style={{ marginLeft: 8 }}>Daily minutes: <input type="number" value={dailyMinutes} onChange={e => setDailyMinutes(e.target.value)} style={{ width: 100 }} /></label>
         <label style={{ marginLeft: 8 }}>Exam date: <input type="date" value={examDate} onChange={e => setExamDate(e.target.value)} /></label>
+        <label style={{ marginLeft: 8 }}>Resource ID: <input type="text" value={resourceId} onChange={e => setResourceId(e.target.value)} placeholder="optional" style={{ width: 260 }} /></label>
         <button onClick={generate} style={{ marginLeft: 8 }} disabled={loading}>Generate</button>
       </div>
       {error && <div style={{ color: 'red' }}>{error}</div>}

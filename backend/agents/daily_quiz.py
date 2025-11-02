@@ -2,7 +2,8 @@ from typing import Dict, Any, Optional
 import os
 import logging
 from llm import call_llm_json
-from .retrieval import hybrid_search, diversify_by_page
+from .retrieval import hybrid_search, diversify_by_page, filter_relevant
+from prompts import get as prompt_get, render as prompt_render
 
 
 def _retrieve_chunk_for_concept(concept: str) -> Optional[Dict[str, Any]]:
@@ -37,13 +38,15 @@ def _retrieve_chunk_for_concept(concept: str) -> Optional[Dict[str, Any]]:
 def daily_quiz_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     concepts = payload.get("concepts") or []
     count = int(payload.get("count") or 1)
+    resource_id = payload.get("resource_id")
     items = []
 
     for c in concepts:
         # First try hybrid search with the concept as query
         chunk = None
         try:
-            results = hybrid_search(c, k=8)
+            results = hybrid_search(c, k=8, resource_id=resource_id)
+            results = filter_relevant(results)
             results = diversify_by_page(results, per_page=1)
             if results:
                 r0 = results[0]
@@ -51,17 +54,17 @@ def daily_quiz_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             logging.exception("hybrid_search_failed_for_quiz")
             chunk = _retrieve_chunk_for_concept(c)
-        # Build a strict JSON prompt for MCQ generation
-        prompt_lines = [
-            "Create ONE multiple-choice question grounded in the academic context.",
-            f"Concept: {c}",
-        ]
-        if chunk and chunk.get("snippet"):
-            prompt_lines.append("Context snippet:\n" + str(chunk.get("snippet"))[:800])
-        prompt_lines.append(
-            "Return ONLY JSON with keys: {\"question\":string, \"options\":[string,string,string,string], \"answer_index\":number (0-3), \"explanation\":string}."
+        if not chunk or not (chunk.get("snippet") or "").strip():
+            continue
+        # Build prompt using registry
+        tmpl = prompt_get("quiz.mcq")
+        prompt = prompt_render(
+            tmpl,
+            {
+                "concept": c,
+                "snippet": (chunk.get("snippet") or "")[:800],
+            },
         )
-        prompt = "\n\n".join(prompt_lines)
 
         try:
             default = {
@@ -72,19 +75,14 @@ def daily_quiz_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
             resp = call_llm_json(prompt, default)
             # attach source and references for grounding
-            if chunk:
-                resp["source_chunk_id"] = chunk.get("id")
-                resp["references"] = [{"chunk_id": chunk.get("id"), "snippet": (chunk.get("snippet") or "")[:200]}]
+            resp["source_chunk_id"] = chunk.get("id")
+            resp["references"] = [{"chunk_id": chunk.get("id"), "snippet": (chunk.get("snippet") or "")[:200]}]
+            # include concept for downstream grading and analytics
+            resp["concept"] = c
             items.append(resp)
         except Exception:
             logging.exception("mcq_generation_failed")
-            items.append({
-                "question": f"What is {c}?",
-                "options": ["A", "B", "C", "D"],
-                "answer_index": 0,
-                "explanation": "",
-                "source_chunk_id": chunk.get("id") if chunk else None,
-            })
+            continue
         if len(items) >= count:
             break
     # Return only 'quiz' (UI can adapt); 'items' deprecated

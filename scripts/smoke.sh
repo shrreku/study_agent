@@ -22,4 +22,7 @@ say "Benchmark P@k proxy"
 curl -sS -X POST "${BASE_URL}/api/bench/pk" -H 'Content-Type: application/json' "${hdr[@]}" \
   -d '{"queries":["heat flux","boundary layer"],"k":5}' | sed -E 's/.{200}/&\n/g'
 
+say "KG OCCURS_IN backfill (dry-run)"
+python3 scripts/kg_backfill_occurs_in.py --dry-run | sed -E 's/.{200}/&\n/g'
+
 echo "\nSmoke completed."

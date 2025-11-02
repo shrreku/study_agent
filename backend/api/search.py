@@ -15,6 +15,7 @@ router = APIRouter()
 class SearchRequest(BaseModel):
     query: str
     k: Optional[int] = 10
+    resource_id: Optional[str] = None
 
 
 @router.post("/api/search")
@@ -23,7 +24,7 @@ async def search(req: SearchRequest, token: str = Depends(require_auth)):
         raise HTTPException(status_code=400, detail="query required")
     try:
         t0 = time.time()
-        rows = hybrid_search(req.query, k=int(req.k or 10))
+        rows = hybrid_search(req.query, k=int(req.k or 10), resource_id=req.resource_id)
         elapsed_ms = int((time.time() - t0) * 1000)
         try:
             mc = MetricsCollector.get_global()

@@ -1,0 +1,150 @@
+ingest:
+  # Enhanced page structure analysis with semantic units and content types
+  page_structure_v2: |
+    Analyze this textbook page and identify semantic units with content-type classification.
+    Page Number: {{page_number}}
+    Page Text:
+    {{page_text}}
+    
+    Identify sections and semantic chunks with the following structure:
+    - Sections: hierarchical structure with number, title, start/end character positions, and level
+    - Chunks: semantic units (concept intro, derivation, example, theorem, summary) with precise boundaries
+    
+    For each chunk, classify its:
+    - Content type: concept_intro, derivation, example, theorem, summary, definition, problem, solution
+    - Cognitive level: remember, understand, apply, analyze, evaluate, create (Bloom's taxonomy)
+    - Difficulty: introductory, intermediate, advanced
+    
+    Detect figures, equations, and their labels. Preserve mathematical formulas with surrounding context.
+    
+    Return ONLY valid JSON in this exact format:
+    {
+      "sections": [
+        {
+          "number": "1.2.3",
+          "title": "Section Title",
+          "start": 0,
+          "end": 500,
+          "level": 3
+        }
+      ],
+      "chunks": [
+        {
+          "start": 0,
+          "end": 250,
+          "type": "concept_intro",
+          "cognitive_level": "understand",
+          "difficulty": "introductory",
+          "section_number": "1.2.3",
+          "section_title": "Section Title",
+          "section_level": 3,
+          "has_figure": false,
+          "has_equation": true,
+          "figure_labels": [],
+          "equation_labels": ["eq:1.1"],
+          "caption": null,
+          "tags": ["tag1", "tag2"]
+        }
+      ]
+    }
+
+  # Hierarchical educational tagging with taxonomy and prerequisites
+  chunk_tags_hierarchical: |
+    Extract hierarchical educational metadata for this chunk.
+    Chunk Text:
+    {{chunk_text}}
+    
+    Extract:
+    1. Hierarchical taxonomy:
+       - Domain (e.g., "Physics", "Mathematics", "Computer Science")
+       - Topic (e.g., "Mechanics", "Calculus", "Algorithms")
+       - Subtopic (e.g., "Newton's Laws", "Derivatives", "Sorting")
+    
+    2. Prerequisites: concepts/skills needed to understand this chunk
+    
+    3. Learning objectives: what students should be able to do after studying this chunk
+    
+    4. Content type: concept_intro, derivation, example, theorem, summary, definition, problem, solution
+    
+    5. Difficulty level: introductory, intermediate, advanced
+    
+    6. Cognitive level: remember, understand, apply, analyze, evaluate, create
+    
+    7. Key concepts: 3-5 main concepts covered in this chunk
+    
+    Return ONLY valid JSON in this exact format:
+    {
+      "domain": "Physics",
+      "topic": "Mechanics",
+      "subtopic": "Newton's Laws",
+      "prerequisites": ["Force", "Mass", "Acceleration"],
+      "learning_objectives": ["Apply Newton's Second Law", "Calculate forces"],
+      "content_type": "derivation",
+      "difficulty": "intermediate",
+      "cognitive_level": "apply",
+      "key_concepts": ["Force", "Mass", "Acceleration", "F=ma"]
+    }
+
+  # Complete formula metadata extraction
+  formula_extraction: |
+    Extract all mathematical formulas and their complete metadata from this text.
+    Text:
+    {{text}}
+    
+    For each formula, extract:
+    1. LaTeX representation (if present) or convert to LaTeX
+    2. All variables with:
+       - Symbol name
+       - Physical meaning/description
+       - Units (SI if applicable)
+       - Whether it's an input, output, or intermediate variable
+    3. Formula type: definition, equation, identity, inequality, expression
+    4. Related formulas: formulas that are derived from or lead to this one
+    5. Context: brief description of when/where this formula is used
+    
+    Return ONLY valid JSON in this exact format:
+    {
+      "formulas": [
+        {
+          "latex": "F = ma",
+          "formula_type": "equation",
+          "context": "Newton's Second Law of Motion",
+          "variables": [
+            {
+              "symbol": "F",
+              "meaning": "Net force",
+              "units": "N (Newtons)",
+              "role": "output"
+            },
+            {
+              "symbol": "m",
+              "meaning": "Mass",
+              "units": "kg",
+              "role": "input"
+            },
+            {
+              "symbol": "a",
+              "meaning": "Acceleration",
+              "units": "m/s²",
+              "role": "input"
+            }
+          ],
+          "related_formulas": ["a = F/m", "p = mv"]
+        }
+      ]
+    }
+
+  # Legacy prompts for backward compatibility (will be deprecated)
+  page_structure: |
+    Analyze this page and extract its structure.
+    Page {{page_number}}:
+    {{page_text}}
+    
+    Return JSON with sections (number, title, start, end, level) and chunks (start, end, tags).
+    Format: {"sections": [...], "chunks": [...]}
+
+  chunk_tags: |
+    Extract 3-6 relevant academic tags/keywords for this chunk.
+    {{chunk_text}}
+    
+    Return JSON: {"tags": ["tag1", "tag2", "tag3"]}

@@ -41,7 +41,7 @@ def test_doubt_accepts_question_text_alias():
 def test_split_text_into_chunks_regression():
     # Ensure the chunker (regex dependency) works; regression for missing `import re`
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from chunker import split_text_into_chunks  # type: ignore
+    from ingestion.chunker import split_text_into_chunks  # type: ignore
 
     text = "INTRODUCTION\n1. Basics of heat transfer.\nThis is some text. Another sentence! And more?\nCONCLUSION\nSummary here."
     chunks = split_text_into_chunks(text, threshold=0.9, min_tokens=1, max_tokens=50, overlap=0)

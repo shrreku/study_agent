@@ -3,7 +3,7 @@ import time
 import json
 from redis import Redis
 from rq import Queue, Connection, Worker
-from parse_utils import extract_text_by_type
+from ingestion.parse_utils import extract_text_by_type
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -69,7 +69,7 @@ def process_parse_job(job_id, resource_id, storage_path):
 
         # run math extraction on PDF images (pix2tex) and map by page
         try:
-            from math_extractor import extract_math_from_pdf
+            from ingestion.math_extractor import extract_math_from_pdf
             math_map = {}
             if local_path and local_path.lower().endswith('.pdf'):
                 math_map = extract_math_from_pdf(local_path)

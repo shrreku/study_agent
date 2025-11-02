@@ -62,7 +62,35 @@ from typing import List, Dict, Any, Optional, Tuple
 import os
 import logging
 import time
-import embed as embed_service
+from ingestion import embed as embed_service
+from metrics import MetricsCollector
+
+
+def _log_retrieved_chunks(query: str, chunks: List[Dict[str, Any]], event_name: str = "retrieval_retrieved_chunks") -> None:
+    """Emit structured log for retrieved chunks (best effort)."""
+
+    try:
+        logging.info(
+            event_name,
+            extra={
+                "question_preview": (query or "")[:200],
+                "chunk_count": len(chunks or []),
+                "chunks": [
+                    {
+                        "id": c.get("id"),
+                        "resource_id": c.get("resource_id"),
+                        "page": c.get("page_number"),
+                        "score": float(c.get("score")) if c.get("score") is not None else None,
+                        "sim": float(c.get("sim")) if c.get("sim") is not None else None,
+                        "bm25": float(c.get("bm25")) if c.get("bm25") is not None else None,
+                        "snippet_preview": (c.get("snippet") or "")[:160],
+                    }
+                    for c in (chunks or [])[:12]
+                ],
+            },
+        )
+    except Exception:
+        logging.exception("retrieval_retrieved_chunks_log_failed")
 
 
 def get_db_dsn() -> str:
@@ -97,17 +125,39 @@ def fetch_chunks_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
         return []
 
 
-def search_chunks_simple(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+def search_chunks_simple(query: str, limit: int = 5, resource_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    mc = MetricsCollector.get_global()
+    resource_scoped = bool(resource_id and str(resource_id).strip())
+    try:
+        mc.increment("retrieval_simple_calls")
+        mc.increment(f"retrieval_simple_calls_scoped_{'true' if resource_scoped else 'false'}")
+    except Exception:
+        pass
     try:
         import psycopg2
         conn = psycopg2.connect(get_db_dsn())
         try:
             with conn.cursor(cursor_factory=_get_real_dict_cursor()) as cur:
-                cur.execute(
-                    "SELECT id::text, resource_id::text, page_number, source_offset, LEFT(full_text, 300) AS snippet FROM chunk WHERE full_text ILIKE %s LIMIT %s",
-                    (f"%{query}%", limit),
+                sql = (
+                    "SELECT id::text, resource_id::text, page_number, source_offset, "
+                    "LEFT(full_text, 800) AS snippet, "
+                    "COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS bm25, "
+                    "COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS score "
+                    "FROM chunk WHERE full_text ILIKE %s"
                 )
-                return cur.fetchall()
+                params: List[Any] = [query, query, f"%{query}%"]
+                if resource_scoped:
+                    sql += " AND resource_id = %s::uuid"
+                    params.append(resource_id)
+                sql += " LIMIT %s"
+                params.append(limit)
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                try:
+                    _log_retrieved_chunks(query, rows, event_name="retrieval_simple_retrieved_chunks")
+                except Exception:
+                    logging.exception("retrieval_simple_log_failed")
+                return rows
         finally:
             conn.close()
     except Exception:
@@ -124,11 +174,27 @@ def _register_pgvector_adapter(conn) -> None:
 
 
 def _embed_query(text: str) -> List[float]:
-    # Use existing embedding service; returns 384-dim list[float]
-    return embed_service.embed_text(text)
+    mc = MetricsCollector.get_global()
+    t0 = time.time()
+    try:
+        # Use existing embedding service; returns 384-dim list[float]
+        return embed_service.embed_text(text)
+    except Exception:
+        mc.increment("hybrid_embed_failed")
+        raise
+    finally:
+        mc.timing("hybrid_embed_ms", int((time.time() - t0) * 1000))
 
 
-def hybrid_search(query: str, k: int = 10, sim_weight: Optional[float] = None, bm25_weight: Optional[float] = None, resource_boost: Optional[float] = None, page_proximity_boost: Optional[bool] = None) -> List[Dict[str, Any]]:
+def hybrid_search(
+    query: str,
+    k: int = 10,
+    sim_weight: Optional[float] = None,
+    bm25_weight: Optional[float] = None,
+    resource_boost: Optional[float] = None,
+    page_proximity_boost: Optional[bool] = None,
+    resource_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Blend pgvector similarity with full-text rank. Falls back gracefully.
 
     Returns list of {id, resource_id, page_number, snippet, score} ordered by score desc.
@@ -151,12 +217,49 @@ def hybrid_search(query: str, k: int = 10, sim_weight: Optional[float] = None, b
     except Exception:
         page_prox = False
 
+    mc = MetricsCollector.get_global()
+    resource_scoped = bool(resource_id and str(resource_id).strip())
+    t0 = time.time()
+    try:
+        mc.increment("retrieval_hybrid_calls")
+        mc.increment(f"retrieval_hybrid_calls_scoped_{'true' if resource_scoped else 'false'}")
+    except Exception:
+        pass
+
+    # Optional OTEL span
+    tracer = None
+    span_ctx = None
+    try:
+        if os.getenv("OTEL_ENABLE", "0").lower() in ("1", "true", "yes"):
+            from opentelemetry import trace  # type: ignore
+            tracer = trace.get_tracer("backend.retrieval")
+            span_ctx = tracer.start_as_current_span("retrieval.hybrid_search")
+            span_ctx.__enter__()
+    except Exception:
+        tracer = None
+        span_ctx = None
+
     # Compute query embedding; if it fails, fall back to simple search
     try:
         qvec = _embed_query(query)
     except Exception:
         logging.exception("hybrid_embed_failed_fallback_simple")
-        return search_chunks_simple(query, k)
+        try:
+            mc.increment("retrieval_fallback_simple_calls")
+        except Exception:
+            pass
+        results = search_chunks_simple(query, k, resource_id=resource_id)
+        try:
+            mc.timing("retrieval_elapsed_ms", int((time.time() - t0) * 1000))
+        except Exception:
+            pass
+        finally:
+            try:
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+        return results
 
     try:
         import psycopg2
@@ -172,7 +275,7 @@ def hybrid_search(query: str, k: int = 10, sim_weight: Optional[float] = None, b
                       resource_id::text,
                       page_number,
                       source_offset,
-                      LEFT(full_text, 300) AS snippet,
+                      LEFT(full_text, 800) AS snippet,
                       COALESCE(1 - (embedding <=> %s::vector), 0.0) AS sim,
                       COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS bm25
                     FROM chunk
@@ -185,9 +288,16 @@ def hybrid_search(query: str, k: int = 10, sim_weight: Optional[float] = None, b
                 except Exception:
                     # If anything odd, fall back to simple search rather than erroring
                     logging.exception("hybrid_qvec_literal_build_failed")
-                    return search_chunks_simple(query, k)
+                    return search_chunks_simple(query, k, resource_id=resource_id)
 
-                cur.execute(base_query + " LIMIT %s", (qvec_lit, query, max(50, k * 5)))
+                params = [qvec_lit, query]
+                sql = base_query
+                if resource_scoped:
+                    sql += " WHERE resource_id = %s::uuid"
+                    params.append(resource_id)
+                sql += " LIMIT %s"
+                params.append(max(50, k * 5))
+                cur.execute(sql, params)
                 candidates = cur.fetchall()
 
                 # Compute combined score in Python to allow flexible fusion and boosts
@@ -211,12 +321,42 @@ def hybrid_search(query: str, k: int = 10, sim_weight: Optional[float] = None, b
 
                 # sort and return top-k
                 results.sort(key=lambda x: x["score"], reverse=True)
-                return results[:k]
+                out = results[:k]
+                try:
+                    _log_retrieved_chunks(query, out, event_name="retrieval_hybrid_retrieved_chunks")
+                except Exception:
+                    logging.exception("retrieval_hybrid_log_failed")
+                try:
+                    mc.timing("retrieval_elapsed_ms", int((time.time() - t0) * 1000))
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if span_ctx:
+                            span_ctx.__exit__(None, None, None)
+                    except Exception:
+                        pass
+                return out
         finally:
             conn.close()
     except Exception:
         logging.exception("hybrid_search_failed_fallback_simple")
-        return search_chunks_simple(query, k)
+        try:
+            mc.increment("retrieval_fallback_simple_calls")
+        except Exception:
+            pass
+        out = search_chunks_simple(query, k, resource_id=resource_id)
+        try:
+            mc.timing("retrieval_elapsed_ms", int((time.time() - t0) * 1000))
+        except Exception:
+            pass
+        finally:
+            try:
+                if span_ctx:
+                    span_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+        return out
 
 
 
@@ -244,8 +384,75 @@ def diversify_by_page(chunks: List[Dict[str, Any]], per_page: int = 1) -> List[D
     return diversified
 
 
-def consolidate_adjacent_microchunks(chunks: List[Dict[str, Any]], window: int = 2) -> List[Dict[str, Any]]:
-    """Group adjacent micro-chunks per resource/page into small windows.
+def _score_with_pedagogy(chunks: List[Dict[str, Any]], desired_roles: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    if not chunks or not desired_roles:
+        return chunks
+    role_priority = {r: idx for idx, r in enumerate(desired_roles)}
+    scored: List[Dict[str, Any]] = []
+    for chunk in chunks:
+        tags = chunk.get("tags") or {}
+        role = None
+        if isinstance(tags, dict):
+            role = tags.get("pedagogy_role") or tags.get("content_type")
+        base_score = float(chunk.get("score") or 0.0)
+        boost = 0.0
+        if role and role in role_priority:
+            boost = max(0.12, 0.25 - role_priority[role] * 0.05)
+        scored.append({**chunk, "score": base_score + boost, "pedagogy_role": role})
+    scored.sort(key=lambda x: x.get("score") or 0.0, reverse=True)
+    return scored
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def filter_relevant(
+    chunks: List[Dict[str, Any]],
+    min_score: Optional[float] = None,
+    min_sim: Optional[float] = None,
+    min_bm25: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    if not chunks:
+        return []
+    ms = _env_float("RAG_MIN_SCORE", 0.35) if min_score is None else float(min_score)
+    msi = _env_float("RAG_MIN_SIM", 0.30) if min_sim is None else float(min_sim)
+    mb = _env_float("RAG_MIN_BM25", 0.15) if min_bm25 is None else float(min_bm25)
+    out: List[Dict[str, Any]] = []
+    for c in chunks:
+        passed = False
+        if c.get("score") is not None:
+            try:
+                if float(c.get("score")) >= ms:
+                    passed = True
+            except Exception:
+                pass
+        if not passed and c.get("sim") is not None:
+            try:
+                if float(c.get("sim")) >= msi:
+                    passed = True
+            except Exception:
+                pass
+        if not passed and c.get("bm25") is not None:
+            try:
+                if float(c.get("bm25")) >= mb:
+                    passed = True
+            except Exception:
+                pass
+        if passed:
+            out.append(c)
+    return out
+
+
+def consolidate_adjacent_microchunks(
+    chunks: List[Dict[str, Any]],
+    window: int = 2,
+    target_chars: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Group adjacent micro-chunks per resource/page into windows or until a target size.
 
     If source_offset is available, use it for ordering; otherwise preserve input order.
     Returns list of dicts: {chunk_ids, resource_id, page_number, snippet}
@@ -265,18 +472,41 @@ def consolidate_adjacent_microchunks(chunks: List[Dict[str, Any]], window: int =
         # sort by source_offset if available
         items.sort(key=lambda x: (x.get("source_offset") is None, int(x.get("source_offset") or 0)))
         i = 0
-        while i < len(items):
-            win = items[i : i + window]
-            chunk_ids = [w.get("id") for w in win if w.get("id")]
-            snippet = " ".join((w.get("snippet") or "") for w in win)[:600]
-            consolidated.append({
-                "chunk_ids": chunk_ids,
-                "resource_id": key[0],
-                "page_number": key[1],
-                "snippet": snippet,
-            })
-            i += window
-    # preserve roughly the original ordering by page then by presence in input
+        n = len(items)
+        while i < n:
+            if target_chars and target_chars > 0:
+                j = i
+                acc_ids: List[str] = []
+                acc_snips: List[str] = []
+                current_len = 0
+                while j < n and current_len < target_chars:
+                    cid = items[j].get("id")
+                    if cid:
+                        acc_ids.append(cid)
+                    sn = (items[j].get("snippet") or "")
+                    acc_snips.append(sn)
+                    current_len += len(sn)
+                    j += 1
+                snippet = " ".join(acc_snips)
+                hard_cap = max(target_chars, 1200)
+                snippet = snippet[:hard_cap]
+                consolidated.append({
+                    "chunk_ids": acc_ids,
+                    "resource_id": key[0],
+                    "page_number": key[1],
+                    "snippet": snippet,
+                })
+                i = j
+            else:
+                win = items[i : i + max(1, int(window))]
+                chunk_ids = [w.get("id") for w in win if w.get("id")]
+                snippet = " ".join((w.get("snippet") or "") for w in win)[:600]
+                consolidated.append({
+                    "chunk_ids": chunk_ids,
+                    "resource_id": key[0],
+                    "page_number": key[1],
+                    "snippet": snippet,
+                })
+                i += max(1, int(window))
     consolidated.sort(key=lambda x: (x.get("resource_id"), int(x.get("page_number") or 0)))
     return consolidated
-
