@@ -11,6 +11,7 @@ from api.llm_endpoints import router as llm_router
 from api.agent import router as agent_router
 from api.analytics import router as analytics_router
 from api.metrics_endpoints import router as metrics_router
+from api.rl_tools import router as rl_router
 from api.bench import router as bench_router
 from api.kg import router as kg_router
 from core.db import ensure_schema
@@ -42,6 +43,7 @@ app.include_router(analytics_router)
 app.include_router(metrics_router)
 app.include_router(bench_router)
 app.include_router(kg_router)
+app.include_router(rl_router)
 
 ## security handled in core.auth; routers declare dependencies
 

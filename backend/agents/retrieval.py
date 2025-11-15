@@ -83,6 +83,9 @@ def _log_retrieved_chunks(query: str, chunks: List[Dict[str, Any]], event_name: 
                         "score": float(c.get("score")) if c.get("score") is not None else None,
                         "sim": float(c.get("sim")) if c.get("sim") is not None else None,
                         "bm25": float(c.get("bm25")) if c.get("bm25") is not None else None,
+                        "pedagogy_role": (
+                            (c.get("tags") or {}).get("pedagogy_role") if isinstance(c.get("tags"), dict) else c.get("pedagogy_role")
+                        ),
                         "snippet_preview": (c.get("snippet") or "")[:160],
                     }
                     for c in (chunks or [])[:12]
@@ -114,7 +117,7 @@ def fetch_chunks_by_ids(ids: List[str]) -> List[Dict[str, Any]]:
         try:
             with conn.cursor(cursor_factory=_get_real_dict_cursor()) as cur:
                 cur.execute(
-                    "SELECT id::text, resource_id::text, page_number, source_offset, LEFT(full_text, 300) AS snippet FROM chunk WHERE id = ANY(%s::uuid[])",
+                    "SELECT id::text, resource_id::text, page_number, source_offset, LEFT(full_text, 300) AS snippet, tags FROM chunk WHERE id = ANY(%s::uuid[])",
                     (ids,),
                 )
                 return cur.fetchall()
@@ -140,7 +143,7 @@ def search_chunks_simple(query: str, limit: int = 5, resource_id: Optional[str] 
             with conn.cursor(cursor_factory=_get_real_dict_cursor()) as cur:
                 sql = (
                     "SELECT id::text, resource_id::text, page_number, source_offset, "
-                    "LEFT(full_text, 800) AS snippet, "
+                    "LEFT(full_text, 800) AS snippet, tags, "
                     "COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS bm25, "
                     "COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS score "
                     "FROM chunk WHERE full_text ILIKE %s"
@@ -276,6 +279,7 @@ def hybrid_search(
                       page_number,
                       source_offset,
                       LEFT(full_text, 800) AS snippet,
+                      tags,
                       COALESCE(1 - (embedding <=> %s::vector), 0.0) AS sim,
                       COALESCE(ts_rank_cd(search_tsv, plainto_tsquery('english', %s)), 0.0) AS bm25
                     FROM chunk
@@ -317,7 +321,17 @@ def hybrid_search(
                         page = int(r.get("page_number") or 0)
                         proximity_boost = max(1.0, 1.0 + max(0, (10 - page)) * 0.02)
                         score *= proximity_boost
-                    results.append({"id": r["id"], "resource_id": r["resource_id"], "page_number": r["page_number"], "source_offset": r.get("source_offset"), "snippet": r["snippet"], "sim": sim, "bm25": bm25, "score": score})
+                    results.append({
+                        "id": r["id"],
+                        "resource_id": r["resource_id"],
+                        "page_number": r["page_number"],
+                        "source_offset": r.get("source_offset"),
+                        "snippet": r["snippet"],
+                        "tags": r.get("tags"),
+                        "sim": sim,
+                        "bm25": bm25,
+                        "score": score,
+                    })
 
                 # sort and return top-k
                 results.sort(key=lambda x: x["score"], reverse=True)
@@ -388,12 +402,29 @@ def _score_with_pedagogy(chunks: List[Dict[str, Any]], desired_roles: Optional[L
     if not chunks or not desired_roles:
         return chunks
     role_priority = {r: idx for idx, r in enumerate(desired_roles)}
-    scored: List[Dict[str, Any]] = []
-    for chunk in chunks:
-        tags = chunk.get("tags") or {}
-        role = None
+    # Optional hard filtering by pedagogy role
+    try:
+        hard_filter = os.getenv("RETRIEVAL_PEDAGOGY_FILTER", "false").lower() in ("1", "true", "yes")
+        relax_if_empty = os.getenv("RETRIEVAL_PEDAGOGY_RELAX_IF_EMPTY", "true").lower() in ("1", "true", "yes")
+    except Exception:
+        hard_filter = False
+        relax_if_empty = True
+
+    def _get_role(c: Dict[str, Any]) -> Optional[str]:
+        tags = c.get("tags") or {}
         if isinstance(tags, dict):
-            role = tags.get("pedagogy_role") or tags.get("content_type")
+            return tags.get("pedagogy_role") or tags.get("content_type")
+        return None
+
+    filtered = chunks
+    if hard_filter:
+        only = [c for c in chunks if (_get_role(c) in role_priority)]
+        if only or not relax_if_empty:
+            filtered = only
+
+    scored: List[Dict[str, Any]] = []
+    for chunk in filtered:
+        role = _get_role(chunk)
         base_score = float(chunk.get("score") or 0.0)
         boost = 0.0
         if role and role in role_priority:

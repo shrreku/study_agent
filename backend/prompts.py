@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - yaml is optional but recommended
 
 _LOCK = threading.Lock()
 _CACHE: Dict[str, Any] = {"set": None, "mtime": 0.0, "prompts": {}}
+_INGEST_CACHE: Dict[str, Any] = {"mtime": 0.0, "prompts": {}}
 
 
 def _default_prompts() -> Dict[str, Any]:
@@ -101,6 +102,75 @@ def _default_prompts() -> Dict[str, Any]:
                 "Level: {{level}}\n"
                 "Context:\n{{context}}"
             ),
+            "prereq_review": (
+                "You are a supportive tutor helping a student prepare for a target concept by reviewing prerequisites first.\n"
+                "Return ONLY JSON: {\"response\": string, \"confidence\": number}.\n"
+                "Student target concept: {{target_concept}}\n"
+                "Prerequisites to review first: {{prereq_names}}\n"
+                "Primary prereq for a brief grounded recap: {{first_prereq}}\n"
+                "Context (snippets from materials):\n{{context}}\n"
+                "Write a short, encouraging message that: (1) acknowledges interest in the target concept, (2) explains that we will briefly review the prerequisite, (3) gives a concise recap grounded ONLY in the provided context, and (4) reassures we'll reach the target concept after."
+            ),
+        },
+        "tutor_rl": {
+            "critic_score": (
+                "You are an independent pedagogy critic reviewing a tutor response.\n"
+                "Evaluate clarity, factual accuracy, quality of grounding, and hallucination risk.\n"
+                "Use the observation summary and retrieved snippets for reference.\n"
+                "Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:\n"
+                "  {\n"
+                '    "clarity": number 0..1,\n'
+                '    "accuracy": number 0..1,\n'
+                '    "support": number 0..1,\n'
+                '    "hallucination_flag": boolean,\n'
+                '    "notes": string (≤280 chars),\n'
+                '    "confidence": number 0..1\n'
+                "  }\n"
+                "Observation:\n"
+                "  Focus concept: {{focus_concept}}\n"
+                "  Action type: {{action_type}}\n"
+                "  Classifier intent: {{intent}}\n"
+                "  Retrieved snippets:\n"
+                "{{retrieved_context}}\n"
+                "Tutor response:\n"
+                "{{response}}\n"
+                "BEGIN_STRICT_JSON\n"
+                "{\n"
+                '  "clarity": 0.8,\n'
+                '  "accuracy": 0.8,\n'
+                '  "support": 0.8,\n'
+                '  "hallucination_flag": false,\n'
+                '  "notes": "",\n'
+                '  "confidence": 0.75\n'
+                "}\n"
+                "END_STRICT_JSON"
+            ),
+            "critic_preference": (
+                "You are comparing multiple tutor responses to the same observation. Choose the best candidate.\n"
+                "Consider clarity, accuracy, grounding, pedagogical value, and safety.\n"
+                "Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:\n"
+                "  {\n"
+                '    "chosen": integer index of the preferred candidate (0-based),\n'
+                '    "scores": array[number] matching the number of candidates (each 0..1),\n'
+                '    "confidence": number 0..1,\n'
+                '    "reason": string (≤200 chars)\n'
+                "  }\n"
+                "Observation summary:\n"
+                "  Focus concept: {{focus_concept}}\n"
+                "  Action type(s): {{action_types}}\n"
+                "  Classifier intent: {{intent}}\n"
+                "Candidates:\n"
+                "{{candidate_summaries}}\n"
+                "Respond with strict JSON only.\n"
+                "BEGIN_STRICT_JSON\n"
+                "{\n"
+                '  "chosen": 0,\n'
+                '  "scores": [0.7],\n'
+                '  "confidence": 0.6,\n'
+                '  "reason": ""\n'
+                "}\n"
+                "END_STRICT_JSON"
+            ),
         },
     }
 
@@ -147,8 +217,29 @@ def _ensure_loaded() -> None:
 
 def get(key_path: str, default: Optional[str] = None) -> str:
     """Get a template string by dotted key path (e.g., 'quiz.mcq')."""
-    _ensure_loaded()
     parts = key_path.split(".") if key_path else []
+    if parts and parts[0] == "ingest":
+        pdir = _prompts_dir()
+        ypath = os.path.join(pdir, "enhanced_ingest.yaml")
+        try:
+            mtime = os.path.getmtime(ypath)
+        except Exception:
+            mtime = 0.0
+        if _INGEST_CACHE.get("mtime") != mtime:
+            data = _load_yaml(ypath)
+            if not isinstance(data, dict):
+                data = {}
+            _INGEST_CACHE["mtime"] = mtime
+            _INGEST_CACHE["prompts"] = data
+        cur_ing: Any = _INGEST_CACHE.get("prompts", {})
+        for p in parts:
+            if not isinstance(cur_ing, dict):
+                cur_ing = None
+                break
+            cur_ing = cur_ing.get(p)
+        if isinstance(cur_ing, str) and cur_ing.strip():
+            return cur_ing
+    _ensure_loaded()
     cur: Any = _CACHE.get("prompts", {})
     for p in parts:
         if not isinstance(cur, dict):

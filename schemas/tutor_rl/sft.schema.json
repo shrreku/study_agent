@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://studyagent.dev/schemas/tutor_rl/sft.schema.json",
+  "title": "TutorRLSFTRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "observation",
+    "action",
+    "response",
+    "reward"
+  ],
+  "properties": {
+    "observation": {
+      "type": "object",
+      "description": "Full observation emitted by tutor_agent with emit_state flag."
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reward": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "components",
+        "total",
+        "weights",
+        "normalized_weights",
+        "flags"
+      ],
+      "properties": {
+        "components": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["score", "details", "flags"],
+            "additionalProperties": false,
+            "properties": {
+              "score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "details": {
+                "type": "object"
+              },
+              "flags": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        },
+        "total": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "normalized_weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "flags": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "critic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clarity", "accuracy", "support", "hallucination_flag", "confidence"],
+      "properties": {
+        "clarity": {"type": "number", "minimum": 0, "maximum": 1},
+        "accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "support": {"type": "number", "minimum": 0, "maximum": 1},
+        "hallucination_flag": {"type": "boolean"},
+        "notes": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "prompt_set": {"type": "string"}
+      }
+    },
+    "meta": {
+      "type": "object",
+      "default": {}
+    }
+  }
+}
+

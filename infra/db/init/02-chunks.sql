@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS chunk (
   difficulty SMALLINT,
   embedding vector(384),
   embedding_version TEXT,
+  tags JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   search_tsv tsvector
@@ -26,5 +27,13 @@ CREATE INDEX IF NOT EXISTS idx_chunk_embedding
 
 -- Full-text search GIN index on search_tsv
 CREATE INDEX IF NOT EXISTS idx_chunk_search ON chunk USING GIN(search_tsv);
+
+-- GIN index for efficient JSONB queries on tags
+CREATE INDEX IF NOT EXISTS idx_chunk_tags_gin ON chunk USING GIN(tags);
+
+-- Specialized index for pedagogy_role queries (most common)
+CREATE INDEX IF NOT EXISTS idx_chunk_pedagogy_role 
+  ON chunk ((tags->>'pedagogy_role')) 
+  WHERE tags->>'pedagogy_role' IS NOT NULL;
 
 

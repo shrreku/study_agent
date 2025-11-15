@@ -173,7 +173,7 @@ def extract_hierarchical_tags(chunk_text: str,
         previous_tags: Optional tags from previous chunks for context
         
     Returns:
-        Dict with comprehensive hierarchical tags
+        Dict with comprehensive hierarchical tags including pedagogy_role
     """
     default = {
         "domain": [],
@@ -186,7 +186,8 @@ def extract_hierarchical_tags(chunk_text: str,
         "content_type": "unknown",
         "difficulty": "intermediate",
         "cognitive_level": "understand",
-        "key_concepts": []
+        "key_concepts": [],
+        "pedagogy_role": "explanation"  # NEW: default pedagogy role
     }
     
     # Build context-aware prompt
@@ -218,11 +219,127 @@ def extract_hierarchical_tags(chunk_text: str,
                          'learning_objectives', 'key_concepts']:
                 if field not in result or not isinstance(result[field], list):
                     result[field] = []
+            
+            # Add pedagogy_role classification if not present
+            if 'pedagogy_role' not in result or not result['pedagogy_role']:
+                result['pedagogy_role'] = classify_pedagogy_role(chunk_text, section_context)
         
         return result or default
     except Exception as e:
         logger.exception("hierarchical_tagging_failed")
         return default
+
+
+def classify_pedagogy_role(chunk_text: str, section_context: Optional[Dict] = None) -> str:
+    """
+    Classify chunk's pedagogical role using hybrid approach.
+    
+    Roles:
+    - definition: Defines terms/concepts
+    - explanation: Explains how/why something works
+    - example: Provides concrete examples
+    - derivation: Mathematical derivations
+    - proof: Formal proofs
+    - application: Real-world applications
+    - problem: Practice problems
+    - summary: Summaries/reviews
+    
+    Strategy:
+    1. Fast heuristic classification (pattern matching)
+    2. If uncertain, use LLM (controlled by env var)
+    
+    Args:
+        chunk_text: Text to classify
+        section_context: Optional section context with title
+        
+    Returns:
+        Pedagogy role string
+    """
+    text_lower = chunk_text.lower()
+    
+    # Heuristic rules (fast path)
+    if any(pattern in text_lower for pattern in ["is defined as", "we define", "definition:", "let us define"]):
+        return "definition"
+    
+    if any(pattern in text_lower for pattern in ["proof:", "to prove", "q.e.d.", "∴", "we prove that", "it follows that"]):
+        return "proof"
+    
+    if any(pattern in text_lower for pattern in ["for example", "for instance", "consider the case", "as an example"]):
+        return "example"
+    
+    if any(pattern in text_lower for pattern in ["deriving", "starting from", "we obtain", "derivation of", "to derive"]):
+        return "derivation"
+    
+    if any(pattern in text_lower for pattern in ["in practice", "real-world", "application", "used in", "practical use"]):
+        return "application"
+    
+    if any(pattern in text_lower for pattern in ["problem:", "exercise:", "find the", "calculate", "solve for"]):
+        return "problem"
+    
+    if any(pattern in text_lower for pattern in ["summary", "in conclusion", "key points", "to summarize", "recap"]):
+        return "summary"
+    
+    # Check section context
+    if section_context:
+        section_title = (section_context.get("title", "") or "").lower()
+        if "example" in section_title:
+            return "example"
+        if "proof" in section_title:
+            return "proof"
+        if "application" in section_title:
+            return "application"
+        if "problem" in section_title or "exercise" in section_title:
+            return "problem"
+        if "definition" in section_title:
+            return "definition"
+    
+    # Check if LLM classification is enabled and chunk is substantial
+    use_llm = os.getenv("PEDAGOGY_LLM_CLASSIFICATION", "false").lower() in ("true", "1", "yes")
+    if use_llm and len(chunk_text) > 100:
+        role = _classify_pedagogy_with_llm(chunk_text)
+        if role:
+            return role
+    
+    # Default fallback
+    return "explanation"
+
+
+def _classify_pedagogy_with_llm(chunk_text: str) -> Optional[str]:
+    """Use LLM to classify pedagogy role when heuristics uncertain.
+    
+    Args:
+        chunk_text: Text to classify
+        
+    Returns:
+        Pedagogy role string or None if classification fails
+    """
+    prompt_template = prompt_get("ingest.classify_pedagogy_role")
+    if not prompt_template:
+        return None
+    
+    # Truncate for efficiency
+    text_sample = chunk_text[:500] if len(chunk_text) > 500 else chunk_text
+    
+    prompt = prompt_render(prompt_template, {
+        "text": text_sample,
+        "valid_roles": ["definition", "explanation", "example", "derivation", "proof", "application", "problem", "summary"]
+    })
+    
+    default = {"role": "explanation", "confidence": 0.5}
+    
+    try:
+        result = call_llm_json(prompt, default)
+        role = result.get("role", "explanation")
+        confidence = result.get("confidence", 0.5)
+        
+        # Only use LLM result if confident
+        confidence_threshold = float(os.getenv("PEDAGOGY_LLM_CONFIDENCE_THRESHOLD", "0.7"))
+        if confidence >= confidence_threshold:
+            return role
+    except Exception:
+        logger.exception("llm_pedagogy_classification_failed")
+    
+    return None
 
 
 def build_concept_hierarchy(concepts: List[Dict[str, Any]]) -> Dict[str, Any]:

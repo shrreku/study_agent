@@ -72,6 +72,8 @@ ingest:
     
     7. Key concepts: 3-5 main concepts covered in this chunk
     
+    8. Pedagogy role: one of [definition, explanation, example, derivation, proof, application, problem, summary]
+    
     Return ONLY valid JSON in this exact format:
     {
       "domain": "Physics",
@@ -82,7 +84,8 @@ ingest:
       "content_type": "derivation",
       "difficulty": "intermediate",
       "cognitive_level": "apply",
-      "key_concepts": ["Force", "Mass", "Acceleration", "F=ma"]
+      "key_concepts": ["Force", "Mass", "Acceleration", "F=ma"],
+      "pedagogy_role": "explanation"
     }
 
   # Complete formula metadata extraction
@@ -148,3 +151,38 @@ ingest:
     {{chunk_text}}
     
     Return JSON: {"tags": ["tag1", "tag2", "tag3"]}
+
+  # Pedagogy role classification for chunks
+  classify_pedagogy_role: |
+    Classify the pedagogical role of this educational content.
+    
+    Text:
+    {{text}}
+    
+    Valid pedagogical roles:
+    {{valid_roles}}
+    
+    Consider the following characteristics:
+    - **definition**: Defines terms, concepts, or introduces new vocabulary (e.g., "Heat conduction is defined as...")
+    - **explanation**: Explains how or why something works, describes mechanisms or processes
+    - **example**: Provides concrete examples, case studies, or worked problems (e.g., "For example, consider...")
+    - **derivation**: Shows mathematical derivations, step-by-step development of equations
+    - **proof**: Formal mathematical or logical proofs (e.g., "Proof:", "Q.E.D.")
+    - **application**: Demonstrates real-world applications, practical uses, or engineering contexts
+    - **problem**: Practice problems, exercises, or questions for students to solve
+    - **summary**: Summaries, reviews, recaps, or key points sections
+    
+    Analyze the text and determine which role best describes its primary pedagogical function.
+    
+    Return ONLY valid JSON in this exact format:
+    {
+      "role": "explanation",
+      "confidence": 0.9,
+      "reasoning": "Brief explanation of why this role was chosen"
+    }
+    
+    The confidence score should be between 0.0 and 1.0, where:
+    - 0.9-1.0: Very confident (clear indicators present)
+    - 0.7-0.9: Confident (multiple indicators match)
+    - 0.5-0.7: Moderate confidence (some ambiguity)
+    - Below 0.5: Low confidence (unclear or mixed signals)

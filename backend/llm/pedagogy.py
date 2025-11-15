@@ -186,13 +186,19 @@ def extract_pedagogy_relations(text: str, meta: Dict[str, Any]) -> Dict[str, Any
     truncated = (text or "")[:max_chars]
 
     prompt = _build_prompt(truncated, meta)
+    pedagogy_model = (
+        os.getenv("PEDAGOGY_MODEL_HINT")
+        or os.getenv("LLM_MODEL_MINI")
+        or os.getenv("LLM_MODEL_NANO")
+        or "gpt-4o-mini"
+    )
     raw = call_json_chat(
         prompt,
         default=_default_payload(),
         system_prompt="You are an expert in extracting structured educational knowledge from text. Always respond with valid JSON following the requested schema.",
         retry_suffix='{"defines":[],"explains":[],"exemplifies":[],"formulas":[],"prerequisites":[]}',
         max_tokens=int(os.getenv("PEDAGOGY_LLM_MAX_TOKENS", os.getenv("LLM_PREVIEW_MAX_TOKENS", "2000"))),
-        model_hint=os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO") or "gpt-4o-mini",
+        model_hint=pedagogy_model,
     )
 
     return _normalize_output(raw)

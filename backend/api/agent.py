@@ -31,6 +31,9 @@ class AgentRequest(BaseModel):
     intent: Optional[str] = None
     affect: Optional[str] = None
     mastery_delta: Optional[float] = None
+    # New: allow clients to hint a model and force an action type
+    model_hint: Optional[str] = None
+    action_override: Optional[Dict[str, Any]] = None
 
 
 @router.post("/api/agent/{agent_name}")

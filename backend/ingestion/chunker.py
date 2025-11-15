@@ -310,6 +310,9 @@ def structural_chunk_resource(resource_path: str) -> List[Dict]:
                     "tags": _llm_chunk_tags(norm),
                     "text_snippet": norm[:300],
                 }
+                # Add pedagogy role classification
+                section_ctx = {'title': sections[0].get("title") if sections else ""}
+                out['pedagogy_role'] = hierarchical_tagger.classify_pedagogy_role(norm, section_ctx if section_ctx['title'] else None)
                 all_chunks.append(out)
             continue
 
@@ -369,6 +372,9 @@ def structural_chunk_resource(resource_path: str) -> List[Dict]:
                 "chunk_type_hint": chunk_type,
                 "text_snippet": norm[:300],
             }
+            # Add pedagogy role classification
+            section_ctx = {'title': section_title, 'number': section_number, 'level': section_level}
+            out_chunk['pedagogy_role'] = hierarchical_tagger.classify_pedagogy_role(norm, section_ctx if section_title else None)
             all_chunks.append(out_chunk)
 
     try:
@@ -483,6 +489,24 @@ def enhanced_structural_chunk_resource(resource_path: str) -> List[Dict]:
                 
             except Exception as e:
                 logger.exception("Failed to enhance chunk", extra={"page": chunk.get("page_number"), "chunk_idx": idx})
+    else:
+        # Even if enhanced tagging is disabled, classify pedagogy_role for all chunks
+        logger.info("Applying basic pedagogy role classification")
+        for chunk in all_chunks:
+            try:
+                section_context = {
+                    'title': chunk.get('section_title', ''),
+                    'number': chunk.get('section_number', ''),
+                    'level': chunk.get('section_level')
+                }
+                pedagogy_role = hierarchical_tagger.classify_pedagogy_role(
+                    chunk.get("full_text", ""),
+                    section_context=section_context if section_context.get('title') else None
+                )
+                chunk['pedagogy_role'] = pedagogy_role
+            except Exception as e:
+                logger.exception("Failed to classify pedagogy role", extra={"page": chunk.get("page_number")})
+                chunk['pedagogy_role'] = "explanation"
     
     # Add extended context windows and figure metadata (INGEST-05)
     context_enabled = os.environ.get("EXTENDED_CONTEXT_ENABLED", "false").lower() in ("true", "1", "yes")

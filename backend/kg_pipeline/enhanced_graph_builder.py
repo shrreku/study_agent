@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_community.graphs.graph_document import GraphDocument, Node, Relationship
@@ -20,6 +21,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from .base import canonicalize_concept, managed_driver
+from .canonicalization import ConceptCanonicalizer
+from .validation import RelationshipValidator
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +37,67 @@ NOISE_PATTERNS = [
     r'^figure\s+\d+',  # Figure references
     r'^table\s+\d+',  # Table references
     r'^eq\.\s*\d+',  # Equation numbers
+    r'^section\s+\d+',  # Section references
+    r'^example\s+\d+',  # Example headings
+    r'^\d{4}$',  # Years
+    r'^[a-z]$',  # Single letters
+    r'^(i{1,3}|iv|v|vi{1,3}|ix|x)$',  # Roman numerals
 ]
+
+# Generic terms that are too broad to be useful as concepts
+GENERIC_TERMS = {
+    "mathematics", "physics", "chemistry", "biology",
+    "science", "engineering", "theory", "concept",
+    "method", "approach", "technique", "process",
+    "system", "model", "analysis", "study",
+}
 
 
 def _is_noise_concept(text: str) -> bool:
     """Check if a concept is noise and should be filtered."""
     if not text or len(text.strip()) < 3:
         return True
-    
+
     text_lower = text.lower().strip()
-    
+
+    # Pattern-based noise
     for pattern in NOISE_PATTERNS:
         if re.match(pattern, text_lower, re.IGNORECASE):
             return True
-    
+
+    # Generic terms
+    if text_lower in GENERIC_TERMS:
+        return True
+
+    # Too long to be a concept label
+    if len(text) > 100:
+        return True
+
+    # Excess special characters
+    special_chars = sum(1 for c in text if not c.isalnum() and c not in " -,")
+    if special_chars > len(text) // 3:
+        return True
+
     return False
+
+
+# Adaptive confidence thresholds per relationship type (env-configurable)
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+RELATIONSHIP_CONFIDENCE_THRESHOLDS: Dict[str, float] = {
+    "DEFINES": _env_float("KG_MIN_CONFIDENCE_DEFINES", 0.80),
+    "PREREQUISITE_OF": _env_float("KG_MIN_CONFIDENCE_PREREQUISITE", 0.75),
+    "DERIVES": _env_float("KG_MIN_CONFIDENCE_DERIVES", 0.75),
+    "EXPLAINS": _env_float("KG_MIN_CONFIDENCE_EXPLAINS", 0.65),
+    "APPLIES_TO": _env_float("KG_MIN_CONFIDENCE_APPLIES_TO", 0.65),
+    "EXEMPLIFIES": _env_float("KG_MIN_CONFIDENCE_EXEMPLIFIES", 0.60),
+    "RELATED_TO": _env_float("KG_MIN_CONFIDENCE_DEFAULT", 0.65),
+}
 
 
 def _get_enhanced_llm():
@@ -212,58 +261,108 @@ def extract_enhanced_educational_graph(
                     nodes.append(node)
         
         # Extract relationships
-        relationships = []
+        relationships: List[Relationship] = []
         rels_data = data.get("relationships", [])
-        
+
         for rel_data in rels_data:
             if not isinstance(rel_data, dict):
                 continue
-            
+
             source = rel_data.get("source", "")
             target = rel_data.get("target", "")
             rel_type = rel_data.get("type", "RELATED_TO")
-            confidence = rel_data.get("confidence", 0.8)
-            
+            confidence = float(rel_data.get("confidence", 0.8))
+
             # Filter noise concepts
             if _is_noise_concept(source) or _is_noise_concept(target):
                 continue
-            
-            # Only keep high-confidence relationships
-            if confidence < 0.6:
+
+            # Apply adaptive confidence threshold
+            min_conf = RELATIONSHIP_CONFIDENCE_THRESHOLDS.get(rel_type, RELATIONSHIP_CONFIDENCE_THRESHOLDS.get("RELATED_TO", 0.65))
+            if confidence < min_conf:
                 continue
-            
+
             # Find corresponding nodes
             source_node = None
             target_node = None
-            
+
             for node in nodes:
-                if node.id.lower() == source.lower():
+                nid = (node.id or "")
+                if nid.lower() == (source or "").lower():
                     source_node = node
-                if node.id.lower() == target.lower():
+                if nid.lower() == (target or "").lower():
                     target_node = node
-            
+
             # Create nodes if they don't exist
             if not source_node:
                 source_node = Node(id=source, type="Concept")
                 nodes.append(source_node)
-            
+
             if not target_node:
                 target_node = Node(id=target, type="Concept")
                 nodes.append(target_node)
-            
+
             rel = Relationship(
                 source=source_node,
                 target=target_node,
                 type=rel_type,
-                properties={"confidence": confidence}
+                properties={"confidence": confidence},
             )
             relationships.append(rel)
-        
+
+        # Canonicalize concept names and deduplicate nodes
+        canonicalizer = ConceptCanonicalizer()
+        id_map: Dict[str, Node] = {}
+        for node in nodes:
+            canon = canonicalizer.canonicalize(node.id)
+            node.id = canon
+            if canon not in id_map:
+                id_map[canon] = node
+            else:
+                # Merge properties into existing
+                try:
+                    id_map[canon].properties.update(node.properties or {})
+                except Exception:
+                    pass
+        nodes = list(id_map.values())
+
+        # Re-point relationships to canonical nodes
+        for rel in relationships:
+            s_id = canonicalizer.canonicalize(rel.source.id)
+            t_id = canonicalizer.canonicalize(rel.target.id)
+            rel.source = id_map.get(s_id, rel.source)
+            rel.target = id_map.get(t_id, rel.target)
+
+        # Optional semantic validation of relationships
+        validate_enabled = os.getenv("KG_SEMANTIC_VALIDATION_ENABLED", "true").lower() in ("1", "true", "yes")
+        if validate_enabled:
+            validator = RelationshipValidator()
+            validated: List[Relationship] = []
+            for rel in relationships:
+                rtype = rel.type or "RELATED_TO"
+                conf = float((rel.properties or {}).get("confidence", 0.8))
+                if rtype == "PREREQUISITE_OF":
+                    ok, adj, reason = validator.validate_prerequisite(rel.source.id, rel.target.id, conf)
+                    if ok:
+                        rel.properties = dict(rel.properties or {})
+                        rel.properties["confidence"] = adj
+                        rel.properties["validation"] = reason
+                        validated.append(rel)
+                elif rtype == "APPLIES_TO":
+                    ok, adj, reason = validator.validate_applies_to(rel.source.id, rel.target.id, conf)
+                    if ok:
+                        rel.properties = dict(rel.properties or {})
+                        rel.properties["confidence"] = adj
+                        validated.append(rel)
+                else:
+                    validated.append(rel)
+            relationships = validated
+
         logger.info(
             f"Enhanced extraction: {len(nodes)} nodes, {len(relationships)} relationships "
             f"from {len(concepts_data)} raw concepts, {len(rels_data)} raw relationships"
         )
-        
+
         return nodes, relationships
         
     except Exception as e:

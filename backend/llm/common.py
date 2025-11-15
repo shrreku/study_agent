@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 import logging
 
 import requests
+
+# Thread-local storage for model override
+_thread_local = threading.local()
 
 JSON_SENTINEL_PATTERN = re.compile(r"BEGIN_STRICT_JSON\s*(\{[\s\S]*?\})\s*END_STRICT_JSON", re.IGNORECASE)
 CODE_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
@@ -111,6 +116,26 @@ def _should_use_json_mode() -> bool:
         return True
 
 
+@contextmanager
+def model_override_context(model: str):
+    """Context manager to temporarily override the model for all LLM calls in this thread."""
+    old_value = getattr(_thread_local, 'model_override', None)
+    _thread_local.model_override = model
+    try:
+        yield
+    finally:
+        if old_value is None:
+            if hasattr(_thread_local, 'model_override'):
+                delattr(_thread_local, 'model_override')
+        else:
+            _thread_local.model_override = old_value
+
+
+def _get_model_override() -> Optional[str]:
+    """Get the thread-local model override if set."""
+    return getattr(_thread_local, 'model_override', None)
+
+
 def _timeout_seconds() -> int:
     try:
         return int(os.getenv("LLM_TIMEOUT_SECS", "60"))
@@ -144,15 +169,20 @@ def call_json_chat(
         logging.error("json_chat_skipped reason=api_key_missing env_vars_checked=OPENAI_API_KEY,AIMLAPI_API_KEY,AIML_KEY,AIMLAPI_KEY")
         return default
 
-    model = model_hint or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
+    # Check thread-local override first, then model_hint, then environment variables
+    model = model_hint or _get_model_override() or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
     if not model:
         model = "gpt-4o-mini"
+
+    user_content = (user_prompt or "").strip()
+    if not user_content:
+        user_content = "Provide a valid JSON response for the requested StudyAgent prompt."
 
     body: Dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
         "max_tokens": max_tokens or int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "2000")),
@@ -181,12 +211,12 @@ def call_json_chat(
         except Exception:
             logging.exception("json_chat_http_error")
             return None
-        if resp.status_code != 200:
+        if not (200 <= resp.status_code < 300):
             try:
                 body_preview = resp.text[:256]
             except Exception:
                 body_preview = ""
-            logging.error("json_chat_non_200 status=%s body=%s", resp.status_code, body_preview)
+            logging.error("json_chat_non_2xx status=%s body=%s", resp.status_code, body_preview)
             return None
         try:
             return resp.json()
