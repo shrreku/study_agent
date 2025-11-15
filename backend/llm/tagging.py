@@ -77,7 +77,13 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
         or os.getenv("AIMLAPI_KEY")
     )
     # Use model from env (nano preferred for preview); do not hardcode in prompts
-    model = os.getenv("LLM_MODEL_NANO", os.getenv("LLM_MODEL_MINI", "openai/gpt-5-nano-2025-08-07"))
+    # Honor thread-local override first, then env models
+    try:
+        from llm.common import _get_model_override as _thread_model_override  # type: ignore
+        override = _thread_model_override()
+    except Exception:
+        override = None
+    model = override or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO") or "openai/gpt-5-nano-2025-08-07"
     
     if not base or not key:
         raise RuntimeError("LLM not configured - missing API base URL or key")
@@ -171,7 +177,7 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
         if span_ctx:
             span_ctx.__enter__()
         resp = requests.post(url, headers=headers, json=body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
-        if resp.status_code == 200:
+        if 200 <= resp.status_code < 300:
             resp_data = resp.json()
             content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
         else:
@@ -205,9 +211,9 @@ def call_llm_for_tagging(text: str, prompt_override: Optional[str] = None) -> Di
             if span_ctx2:
                 span_ctx2.__enter__()
             resp2 = requests.post(url, headers=headers, json=body_retry, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
-            if resp2.status_code == 200:
+            if 200 <= resp2.status_code < 300:
                 resp_data = resp2.json()
-                content = resp2.get_json()["choices"][0]["message"]["content"] if hasattr(resp2, "get_json") else resp2.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = resp2.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             else:
                 logging.error("llm_retry_non_200 status=%s body=%s", resp2.status_code, resp2.text[:512])
         except requests.RequestException as e:
@@ -388,7 +394,13 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
         or os.getenv("AIML_KEY")
         or os.getenv("AIMLAPI_KEY")
     )
-    model = os.getenv("LLM_MODEL_NANO", os.getenv("LLM_MODEL_MINI", "openai/gpt-5-nano-2025-08-07"))
+    # Honor thread-local override (from model_override_context) first, then env defaults
+    try:
+        from llm.common import _get_model_override as _thread_model_override  # type: ignore
+        _override = _thread_model_override()
+    except Exception:
+        _override = None
+    model = _override or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO") or "openai/gpt-5-nano-2025-08-07"
     if not base or not key:
         return default
     base_clean = base.rstrip("/")
@@ -410,11 +422,15 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
     else:
         max_tokens = int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800"))
     
+    user_content = (prompt or "").strip()
+    if not user_content:
+        user_content = "Provide the requested JSON payload following the StudyAgent schema."
+
     body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
         "max_tokens": max_tokens,
@@ -432,7 +448,7 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.time()
     try:
         resp = requests.post(url, headers=headers, json=body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
-        if resp.status_code != 200:
+        if not (200 <= resp.status_code < 300):
             logging.error("llm_json_non_200 status=%s", resp.status_code)
             return default
         data = resp.json()
@@ -477,7 +493,7 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
         if not is_reasoning_model and use_json_mode:
             retry_body["response_format"] = {"type": "json_object"}
         resp2 = requests.post(url, headers=headers, json=retry_body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
-        if resp2.status_code != 200:
+        if not (200 <= resp2.status_code < 300):
             logging.error("llm_json_retry_non_200 status=%s", resp2.status_code)
             return default
         data2 = resp2.json()

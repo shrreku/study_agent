@@ -9,6 +9,7 @@ import io
 import uuid
 import tempfile
 import logging
+import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -29,8 +30,10 @@ from kg_pipeline import (
     merge_section_node,
     merge_next_chunk,
 )
+from kg_pipeline.enhanced_graph_builder import build_enhanced_educational_kg
 from metrics import MetricsCollector
 from llm import extract_pedagogy_relations, tag_and_extract
+from llm.common import model_override_context
 from ingestion import embed as embed_service
 from ingestion.chunker import structural_chunk_resource, enhanced_structural_chunk_resource
 
@@ -165,7 +168,12 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
     # Compute new structural chunks
     chunker_fn = _get_chunker()
     logging.info("chunker_selected", extra={"fn": getattr(chunker_fn, "__name__", str(chunker_fn))})
-    new_chunks = chunker_fn(local_path)
+    ingest_model = os.getenv("INGEST_MODEL_HINT") or None
+    if ingest_model:
+        with model_override_context(ingest_model):
+            new_chunks = chunker_fn(local_path)
+    else:
+        new_chunks = chunker_fn(local_path)
     logging.info("chunker_output", extra={"chunks": len(new_chunks)})
 
     def key_of(c: Dict[str, Any]) -> str:
@@ -236,7 +244,12 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
 
     def _tag(text: str, hint: Optional[str] = None) -> Dict[str, Any]:
         try:
-            data = tag_and_extract(text)
+            ingest_tag_model = os.getenv("INGEST_TAG_MODEL_HINT") or os.getenv("INGEST_MODEL_HINT")
+            if ingest_tag_model:
+                with model_override_context(ingest_tag_model):
+                    data = tag_and_extract(text)
+            else:
+                data = tag_and_extract(text)
             if hint and not data.get("chunk_type"):
                 data["chunk_type"] = hint
             return data
@@ -491,9 +504,28 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                     figure_labels = c.get("figure_labels") or []
                     equation_labels = c.get("equation_labels") or []
                     caption = c.get("caption")
-                    tags_json = c.get("tags") or []
+                    
+                    # Build tags JSONB with pedagogy_role
+                    tags_json = {}
+                    if c.get("pedagogy_role"):
+                        tags_json["pedagogy_role"] = c.get("pedagogy_role")
+                    if c.get("content_type"):
+                        tags_json["content_type"] = c.get("content_type")
+                    if c.get("difficulty"):
+                        tags_json["difficulty"] = c.get("difficulty")
+                    if c.get("cognitive_level"):
+                        tags_json["cognitive_level"] = c.get("cognitive_level")
+                    for _fld in ("domain", "topic", "subtopic", "key_concepts", "prerequisites", "learning_objectives"):
+                        _val = c.get(_fld)
+                        if _val is not None and _val != "":
+                            tags_json[_fld] = _val
+                    if isinstance(c.get("tags"), dict):
+                        tags_json.update(c.get("tags"))
+                    
                     heading_text = " ".join(filter(None, [section_number, section_title]))
-                    tags_text = " ".join(tags_json)
+                    # tags_text for search - use old tags list if it exists
+                    old_tags_list = c.get("tags") if isinstance(c.get("tags"), list) else []
+                    tags_text = " ".join(old_tags_list)
                     full_text = c.get("full_text") or ""
                     text_snippet = c.get("text_snippet") or full_text[:300]
                     chunk_type = tags.get("chunk_type") or c.get("chunk_type_hint")
@@ -613,6 +645,21 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                                 tags.get("math_expressions"),
                                 concept_canonicals=concepts_canonical,
                             )
+                        # Optionally build enhanced educational KG (LLM-based) for this chunk
+                        try:
+                            if os.getenv("KG_ENHANCED_EXTRACTION_ENABLED", "false").lower() in ("true", "1", "yes"):
+                                build_enhanced_educational_kg(
+                                    full_text,
+                                    str(new_id),
+                                    resource_id,
+                                    {
+                                        "title": section_title,
+                                        "section_title": section_title,
+                                        "chunk_type": chunk_type,
+                                    },
+                                )
+                        except Exception:
+                            logging.exception("enhanced_kg_build_failed", extra={"chunk_id": str(new_id)})
                     except Exception:
                         logging.exception("kg_merge_failed")
             conn.commit()
@@ -644,9 +691,29 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                     figure_labels = c.get("figure_labels") or []
                     equation_labels = c.get("equation_labels") or []
                     caption = c.get("caption")
-                    tags_json = c.get("tags") or []
+                    
+                    # Build tags JSONB with pedagogy_role
+                    tags_json = {}
+                    if c.get("pedagogy_role"):
+                        tags_json["pedagogy_role"] = c.get("pedagogy_role")
+                    if c.get("content_type"):
+                        tags_json["content_type"] = c.get("content_type")
+                    if c.get("difficulty"):
+                        tags_json["difficulty"] = c.get("difficulty")
+                    if c.get("cognitive_level"):
+                        tags_json["cognitive_level"] = c.get("cognitive_level")
+                    for _fld in ("domain", "topic", "subtopic", "key_concepts", "prerequisites", "learning_objectives"):
+                        _val = c.get(_fld)
+                        if _val is not None and _val != "":
+                            tags_json[_fld] = _val
+                    # Merge any additional tags from chunk
+                    if isinstance(c.get("tags"), dict):
+                        tags_json.update(c.get("tags"))
+                    
                     heading_text = " ".join(filter(None, [section_number, section_title]))
-                    tags_text = " ".join(tags_json)
+                    # tags_text for search - use old tags list if it exists
+                    old_tags_list = c.get("tags") if isinstance(c.get("tags"), list) else []
+                    tags_text = " ".join(old_tags_list)
                     full_text = c.get("full_text") or ""
                     text_snippet = c.get("text_snippet") or full_text[:300]
                     chunk_type = tags.get("chunk_type") or c.get("chunk_type_hint")
@@ -706,6 +773,7 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                         ),
                     )
                     try:
+                        concepts_canonical = None
                         concepts = tags.get("concepts") or []
                         concepts_unique, concepts_canonical = _update_kg_relations(
                             concepts,
@@ -752,6 +820,21 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                                 tags.get("math_expressions"),
                                 concept_canonicals=concepts_canonical,
                             )
+                        # Optionally build enhanced educational KG (LLM-based) for this updated chunk
+                        try:
+                            if os.getenv("KG_ENHANCED_EXTRACTION_ENABLED", "false").lower() in ("true", "1", "yes"):
+                                build_enhanced_educational_kg(
+                                    full_text,
+                                    str(chunk_id),
+                                    resource_id,
+                                    {
+                                        "title": section_title,
+                                        "section_title": section_title,
+                                        "chunk_type": chunk_type,
+                                    },
+                                )
+                        except Exception:
+                            logging.exception("enhanced_kg_build_failed", extra={"chunk_id": str(chunk_id)})
                     except Exception:
                         logging.exception("kg_merge_failed")
             conn.commit()
@@ -872,63 +955,44 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
                 chunk_type = tags.get("chunk_type")
                 concepts = tags.get("concepts")
                 math_expressions = tags.get("math_expressions")
+                
+                # Build tags JSONB with pedagogy_role
+                tags_json = {}
+                if c.get("pedagogy_role"):
+                    tags_json["pedagogy_role"] = c.get("pedagogy_role")
+                if c.get("content_type"):
+                    tags_json["content_type"] = c.get("content_type")
+                if c.get("difficulty"):
+                    tags_json["difficulty"] = c.get("difficulty")
+                if c.get("cognitive_level"):
+                    tags_json["cognitive_level"] = c.get("cognitive_level")
+                for _fld in ("domain", "topic", "subtopic", "key_concepts", "prerequisites", "learning_objectives"):
+                    _val = c.get(_fld)
+                    if _val is not None and _val != "":
+                        tags_json[_fld] = _val
 
                 cur.execute(
-                    "INSERT INTO chunk (id, resource_id, page_number, source_offset, full_text, chunk_type, concepts, math_expressions, created_at) VALUES (uuid_generate_v4(),%s,%s,%s,%s,%s,%s,%s,now()) RETURNING id",
-                    (resource_id, c["page_number"], c["source_offset"], c["full_text"], chunk_type, concepts, math_expressions)
+                    "INSERT INTO chunk (id, resource_id, page_number, source_offset, full_text, chunk_type, concepts, math_expressions, tags, created_at) VALUES (uuid_generate_v4(),%s,%s,%s,%s,%s,%s,%s,%s,now()) RETURNING id",
+                    (resource_id, c["page_number"], c["source_offset"], c["full_text"], chunk_type, concepts, math_expressions, json.dumps(tags_json))
                 )
                 new_id = cur.fetchone()["id"]
                 try:
-                    if concepts:
-                        chunk_meta = {
-                            "full_text": c.get("full_text"),
-                            "page_number": c.get("page_number"),
-                            "section_path": c.get("section_path"),
-                            "section_title": c.get("section_title"),
-                            "section_number": c.get("section_number"),
-                            "section_level": c.get("section_level"),
-                            "chunk_type": chunk_type,
-                        }
-                        snippet = (c.get("full_text") or "")[:160]
-                        concepts_unique, concepts_canonical = _update_kg_relations(
-                            concepts,
-                            str(new_id),
-                            snippet,
-                            resource_id,
-                            chunk_meta,
-                        )
-                        if concepts_unique:
-                            chunk.setdefault("_kg_unique", concepts_unique)
-                            chunk.setdefault("_kg_chunk_id", str(new_id))
-                        link_chunk_to_section(
+                    concepts_canonical = None
+                    # Use INGEST-04 enhanced formulas if available, otherwise fall back to old tags
+                    if c.get('formulas'):
+                        merge_chunk_formulas_enhanced(
                             str(new_id),
                             resource_id,
-                            chunk_meta.get("section_path"),
-                            chunk_meta.get("section_title"),
-                            chunk_meta.get("section_number"),
-                            chunk_meta.get("section_level"),
-                        )
-                        merge_chunk_figures(
-                            str(new_id),
-                            resource_id,
-                            c.get("figure_labels"),
+                            c.get('formulas'),
                             concept_canonicals=concepts_canonical,
                         )
-                        # Use INGEST-04 enhanced formulas if available, otherwise fall back to old tags
-                        if c.get('formulas'):
-                            merge_chunk_formulas_enhanced(
-                                str(new_id),
-                                resource_id,
-                                c.get('formulas'),
-                                concept_canonicals=concepts_canonical,
-                            )
-                        else:
-                            merge_chunk_formulas(
-                                str(new_id),
-                                resource_id,
-                                tags.get("math_expressions"),
-                                concept_canonicals=concepts_canonical,
-                            )
+                    else:
+                        merge_chunk_formulas(
+                            str(new_id),
+                            resource_id,
+                            tags.get("math_expressions"),
+                            concept_canonicals=concepts_canonical,
+                        )
                 except Exception:
                     logging.exception("kg_merge_failed")
                 inserted += 1
@@ -948,7 +1012,8 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
                         "source_offset": c.get("source_offset"),
                     }
                 )
-        _infer_prereqs_from_sequence(resource_id, summaries)
+        if "_infer_prereqs_from_sequence" in globals():
+            _infer_prereqs_from_sequence(resource_id, summaries)
     except Exception:
         logging.exception("kg_sequence_prereq_failed")
 

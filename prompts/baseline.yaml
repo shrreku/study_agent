@@ -63,6 +63,7 @@ tutor:
         "confidence": number between 0 and 1
       }
     Concept focus: {{concept}}
+    Student message: {{student_message}}
     Student level: {{level}}
     Context snippets:
     {{context}}
@@ -81,6 +82,7 @@ tutor:
         "options": [string, string, string] OR []
       }
     Concept focus: {{concept}}
+    Student message: {{student_message}}
     Student level: {{level}}
     Context snippets:
     {{context}}
@@ -96,6 +98,7 @@ tutor:
         "confidence": number between 0 and 1
       }
     Concept focus: {{concept}}
+    Student message: {{student_message}}
     Student level: {{level}}
     Context snippets:
     {{context}}
@@ -111,6 +114,198 @@ tutor:
         "confidence": number between 0 and 1
       }
     Concept focus: {{concept}}
+    Student message: {{student_message}}
     Student level: {{level}}
     Context snippets:
     {{context}}
+
+  generate_example: |
+    You are an expert tutor creating examples to illustrate concepts for a specific student.
+    Requirements:
+    - Use a {{difficulty}}-level explanation.
+    - Prefer {{context_type}} contexts that match the student's background ({{student_background}}).
+    - If course examples are provided, draw inspiration without copying.
+    - Avoid repeating these patterns: {{avoid_patterns}}
+    Return ONLY JSON with keys:
+      {
+        "example": string,
+        "explanation": string,
+        "relevance": number between 0 and 1,
+        "confidence": number between 0 and 1
+      }
+    Concept: {{concept}}
+    Student already understands: {{prerequisites}}
+    Course material examples:
+    {{course_examples}}
+
+  srl_planning: |
+    You are an expert tutor's internal reasoning system. Think step-by-step about how to best help this student.
+    You will first generate a <think>...</think> reasoning trace, then decide on an action.
+    Available actions: {{available_actions}}
+
+    Reasoning framework:
+    1. What does the student need right now? (assess state)
+    2. What teaching method is most appropriate? (select pedagogy)
+    3. What content should I retrieve? (plan retrieval)
+    4. What are my assumptions and risks? (metacognition)
+
+    Student message: "{{student_message}}"
+    Student state:
+    - Intent: {{intent}}
+    - Affect: {{affect}}
+    - Focus concept: {{focus_concept}}
+    - Level: {{student_level}}
+    - Previous action: {{previous_action}}
+
+    Mastery snapshot:
+    {{mastery_snapshot}}
+
+    Learning path: {{learning_path}}
+
+    <think>
+    [Generate your internal reasoning here. Be explicit about:
+    - What the student seems to understand/not understand
+    - Why you're choosing this action over alternatives
+    - What you plan to retrieve and why
+    - Any assumptions you're making]
+    </think>
+
+    Prefer a short multi-action sequence (2-4 steps), e.g., explain basics → quick concept-check → extend if appropriate.
+
+    Return ONLY minified JSON with keys:
+    {
+      "thinking": "<your reasoning from think block>",
+      "intended_action": "explain|ask|hint|reflect|review",
+      "action_rationale": "why this action is best",
+      "retrieval_query": "what to search for",
+      "pedagogy_focus": ["definition", "example"],
+      "difficulty_cap": "introductory|intermediate|advanced",
+      "confidence": 0.8,
+      "assumptions": ["student has seen X before"],
+      "risks": ["might be too advanced"],
+      "steps": [
+        {"action": "explain", "rationale": "cover basics", "pedagogy_focus": ["definition","explanation"], "target_concept": "optional"},
+        {"action": "ask", "rationale": "check fluency", "pedagogy_focus": ["concept_check"], "target_concept": "optional"}
+      ],
+      "target_sequence": ["optional ordered concepts/subtopics to progress"]
+    }
+
+  explain_with_plan: |
+    You are an adaptive tutor explaining a concept using only the provided grounded context.
+    Use the provided internal plan to guide structure, pedagogy, and difficulty.
+    Requirements:
+    - Keep tone warm and encouraging.
+    - Use simple steps and highlight key ideas.
+    - Align with the plan's rationale and pedagogy focus: {{pedagogy_focus}}
+    - If context insufficient, respond with: "Let's review that from your materials first."
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Internal plan thinking:
+    {{plan_thinking}}
+    Plan rationale:
+    {{plan_rationale}}
+    Context snippets:
+    {{context}}
+
+  self_critique: |
+    You are a self-critic reviewing a tutor response before sending to a student.
+    Evaluate the response against the internal plan and student state.
+    Checks:
+    - Does response match intended action ({{intended_action}})?
+    - Is difficulty appropriate for {{student_level}}?
+    - Are assumptions addressed and risks mitigated?
+    Return ONLY minified JSON with keys:
+      {
+        "quality": number 0..1,
+        "issues": [string],
+        "suggestions": [string],
+        "should_revise": boolean,
+        "reasoning": string
+      }
+    Internal plan thinking:
+    {{plan_thinking}}
+    Plan rationale:
+    {{plan_rationale}}
+    Generated response:
+    {{generated_response}}
+
+  bridge_example: |
+    You are an expert tutor creating a bridge example from a known concept to a new concept.
+    Requirements:
+    - Connect what the student knows ({{from_concept}}) to the new idea ({{to_concept}}).
+    - Keep at a {{student_level}} level.
+    - If course examples are provided, reference them without copying.
+    Return ONLY JSON with keys:
+      {
+        "example": string,
+        "explanation": string,
+        "relevance": number between 0 and 1,
+        "confidence": number between 0 and 1
+      }
+    Course material examples:
+    {{course_examples}}
+
+tutor_rl:
+  critic_score: |
+    You are an independent pedagogy critic reviewing a tutor response.
+    Evaluate clarity, factual accuracy, quality of grounding, and hallucination risk.
+    Use the observation summary and retrieved snippets for reference.
+    Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:
+      {
+        "clarity": number 0..1,
+        "accuracy": number 0..1,
+        "support": number 0..1,
+        "hallucination_flag": boolean,
+        "notes": string (≤280 chars),
+        "confidence": number 0..1
+      }
+    Observation:
+      Student message: {{student_message}}
+      Focus concept: {{focus_concept}}
+      Action type: {{action_type}}
+      Classifier intent: {{intent}}
+      Retrieved snippets:
+    {{retrieved_context}}
+    Tutor response:
+    {{response}}
+    BEGIN_STRICT_JSON
+    {
+      "clarity": 0.8,
+      "accuracy": 0.8,
+      "support": 0.8,
+      "hallucination_flag": false,
+      "notes": "",
+      "confidence": 0.75
+    }
+    END_STRICT_JSON
+  critic_preference: |
+    You are comparing multiple tutor responses to the same observation. Choose the best candidate.
+    Consider clarity, accuracy, grounding, pedagogical value, and safety.
+    Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:
+      {
+        "chosen": integer index of the preferred candidate (0-based),
+        "scores": array[number] matching the number of candidates (each 0..1),
+        "confidence": number 0..1,
+        "reason": string (≤200 chars)
+      }
+    Observation summary:
+      Student message: {{student_message}}
+      Focus concept: {{focus_concept}}
+      Action type(s): {{action_types}}
+      Classifier intent: {{intent}}
+    Candidates:
+    {{candidate_summaries}}
+    Respond with strict JSON only.
+    BEGIN_STRICT_JSON
+    {
+      "chosen": 0,
+      "scores": [0.7],
+      "confidence": 0.6,
+      "reason": ""
+    }
+    END_STRICT_JSON

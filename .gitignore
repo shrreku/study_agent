@@ -29,7 +29,6 @@ backend/.venv/
 # Project folders to exclude from git history
 tickets/
 docs/
-sample/
 
 DEVELOPMENT_GUIDE_GPT5.md
 PROJECT_CONTEXT.md
@@ -39,3 +38,4 @@ tasks.md
 rlenv.md
 sihppt.pptx
 tutorAgentContext.md
+SRL_GUIDE.md
