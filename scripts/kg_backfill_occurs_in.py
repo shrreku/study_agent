@@ -15,10 +15,17 @@ from psycopg2.extras import RealDictCursor
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
+APP_DIR = Path("/app")
+if APP_DIR.exists() and str(APP_DIR) not in sys.path:
+    sys.path.append(str(APP_DIR))
 
 from dotenv import load_dotenv, find_dotenv  # type: ignore  # noqa: E402
-from backend.core.db import get_db_conn  # noqa: E402
-from backend.core.kg import merge_concepts_in_neo4j  # noqa: E402
+if (APP_DIR / "core").exists():
+    from core.db import get_db_conn  # type: ignore  # noqa: E402
+    from kg_pipeline import merge_concepts_in_neo4j  # type: ignore  # noqa: E402
+else:
+    from backend.core.db import get_db_conn  # type: ignore  # noqa: E402
+    from backend.kg_pipeline import merge_concepts_in_neo4j  # type: ignore  # noqa: E402
 
 
 def _chunk_meta_from_row(row: Dict[str, Any]) -> Dict[str, Any]:

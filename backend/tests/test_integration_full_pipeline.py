@@ -15,7 +15,7 @@ if backend_dir not in sys.path:
 
 from ingestion.chunker import enhanced_structural_chunk_resource, structural_chunk_resource
 from ingestion import quality_validator
-from archive import performance_benchmark
+import performance_benchmark
 
 
 def test_full_pipeline_all_features_enabled():

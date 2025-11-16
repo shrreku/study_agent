@@ -175,7 +175,7 @@ def _normalize_output(raw: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def extract_pedagogy_relations(text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+def extract_pedagogy_relations(text: str, meta: Dict[str, Any], model_hint: Optional[str] = None) -> Dict[str, Any]:
     if not text:
         return _default_payload()
 
@@ -187,7 +187,8 @@ def extract_pedagogy_relations(text: str, meta: Dict[str, Any]) -> Dict[str, Any
 
     prompt = _build_prompt(truncated, meta)
     pedagogy_model = (
-        os.getenv("PEDAGOGY_MODEL_HINT")
+        model_hint
+        or os.getenv("PEDAGOGY_MODEL_HINT")
         or os.getenv("LLM_MODEL_MINI")
         or os.getenv("LLM_MODEL_NANO")
         or "gpt-4o-mini"

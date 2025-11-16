@@ -431,7 +431,7 @@ def _generate_explain_response(
     return response_text, "explain", confidence, source_ids, concept
 
 
-def tutor_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
+def legacy_tutor_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
     message = (payload.get("message") or "").strip()
     if not message:
         raise ValueError("invalid payload, missing message")

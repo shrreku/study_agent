@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from typing import Optional, List, Dict, Any
+from pydantic import BaseModel
 from itertools import combinations
 from difflib import SequenceMatcher
 import re
@@ -109,8 +110,18 @@ async def upload_resource(file: UploadFile = File(...), title: str = "", token: 
     return {"resource_id": row["id"], "title": row["title"], "size": row["size_bytes"], "job_id": job_id}
 
 
+class ReindexModels(BaseModel):
+    ingest_model: Optional[str] = None
+    ingest_tag_model: Optional[str] = None
+    pedagogy_model: Optional[str] = None
+
+
 @router.post("/api/resources/{resource_id}/reindex")
-async def reindex_resource(resource_id: str, token: str = Depends(require_auth)):
+async def reindex_resource(
+    resource_id: str,
+    models: Optional[ReindexModels] = None,
+    token: str = Depends(require_auth),
+):
     """Incrementally reindex a resource by diffing structural chunks.
 
     - Recompute structural chunks
@@ -165,10 +176,15 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                     pass
             raise HTTPException(status_code=400, detail=f"resource not available locally and MinIO download failed: {e}")
 
+    # Resolve per-request model overrides with env-based fallbacks
+    models = models or ReindexModels()
+    ingest_model = models.ingest_model or os.getenv("INGEST_MODEL_HINT") or None
+    ingest_tag_model = models.ingest_tag_model or os.getenv("INGEST_TAG_MODEL_HINT") or ingest_model
+    pedagogy_model = models.pedagogy_model or os.getenv("PEDAGOGY_MODEL_HINT") or None
+
     # Compute new structural chunks
     chunker_fn = _get_chunker()
     logging.info("chunker_selected", extra={"fn": getattr(chunker_fn, "__name__", str(chunker_fn))})
-    ingest_model = os.getenv("INGEST_MODEL_HINT") or None
     if ingest_model:
         with model_override_context(ingest_model):
             new_chunks = chunker_fn(local_path)
@@ -244,7 +260,6 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
 
     def _tag(text: str, hint: Optional[str] = None) -> Dict[str, Any]:
         try:
-            ingest_tag_model = os.getenv("INGEST_TAG_MODEL_HINT") or os.getenv("INGEST_MODEL_HINT")
             if ingest_tag_model:
                 with model_override_context(ingest_tag_model):
                     data = tag_and_extract(text)
@@ -410,6 +425,7 @@ async def reindex_resource(resource_id: str, token: str = Depends(require_auth))
                         "title": chunk_meta.get("section_title"),
                         "resource_id": resource_id,
                     },
+                    model_hint=pedagogy_model,
                 )
             except Exception:
                 logging.exception("pedagogy_llm_failed", extra={"chunk_id": chunk_id})

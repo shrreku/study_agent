@@ -15,8 +15,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Add backend to path
+# Add project root and backend to path for local and container execution
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 BACKEND_DIR = ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))

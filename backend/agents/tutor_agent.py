@@ -6,6 +6,7 @@ import os
 from core.db import get_db_conn
 
 from .tutor.constants import logger
+from .tutor.agent import tutor_agent as _canonical_tutor_agent
 from .tutor.state import TutorSessionPolicy
 from .tutor.classifier import classify_message
 from .tutor.policy import (
@@ -284,3 +285,7 @@ def tutor_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
         conn.close()
 
     return response_payload
+
+
+def tutor_agent(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return _canonical_tutor_agent(payload)

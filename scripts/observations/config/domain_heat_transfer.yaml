@@ -1,0 +1,60 @@
+domain: "heat_transfer"
+
+# UUIDs of ingested resources for this domain.
+# Replace these placeholders with real resource IDs from the `resource` table.
+resource_ids:
+  - "00000000-0000-0000-0000-000000000000"
+
+# Target number of observations to generate per concept.
+observations_per_concept: 5
+
+# Scenario mix for OBS-01 (deterministic templates, no LLM).
+scenario_distribution:
+  explain: 0.4
+  worked_example: 0.2
+  concept_check: 0.2
+  reflection: 0.1
+  hint: 0.1
+
+# OBS-02: optional LLM-backed student messages and answers.
+# When false, the pipeline uses only deterministic string templates.
+use_llm_messages: false
+use_llm_answers: false
+
+# Optional: override LLM model used for observation generation (student messages/answers).
+# If set, this takes precedence over OBS_LLM_MODEL env; otherwise OBS_LLM_MODEL is used,
+# then the global LLM_MODEL_MINI/LLM_MODEL_NANO defaults.
+llm_model: ""
+
+# Synthetic mastery buckets.
+mastery_distribution:
+  low: 0.5
+  medium: 0.3
+  high: 0.2
+
+# Nominal mastery values per bucket.
+mastery_values:
+  low: 0.2
+  medium: 0.5
+  high: 0.8
+
+# Map mastery bucket -> tutor concept_level.
+concept_level_for_bucket:
+  low: "beginner"
+  medium: "developing"
+  high: "proficient"
+
+use_real_mastery: false
+
+# Difficulty thresholds used to bucket chunk-level difficulty into bands.
+# If a concept appears across multiple chunks, the average difficulty is used.
+# <= low_max   -> beginner
+# <= medium_max-> developing
+# >  medium_max-> proficient
+difficulty_thresholds:
+  low_max: 2
+  medium_max: 3
+
+# Optional filters for concepts inferred from chunks.
+concept_include_prefixes: []
+concept_exclude_prefixes: []

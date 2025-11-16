@@ -12,9 +12,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
+APP_DIR = Path("/app")
+if APP_DIR.exists() and str(APP_DIR) not in sys.path:
+    sys.path.append(str(APP_DIR))
 
 from dotenv import load_dotenv, find_dotenv  # type: ignore  # noqa: E402
-from backend.core.kg_base import managed_driver  # noqa: E402
+try:
+    if (APP_DIR / "core").exists():
+        from kg_pipeline.base import managed_driver  # type: ignore  # noqa: E402
+    else:
+        from backend.kg_pipeline.base import managed_driver  # type: ignore  # noqa: E402
+except ModuleNotFoundError:
+    from kg_pipeline.base import managed_driver  # type: ignore  # noqa: E402
 
 
 def wipe_neo4j(dry_run: bool) -> None:
