@@ -1,21 +1,28 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import { useAuth } from '../../hooks/useAuth'
+import { API_BASE } from '../../lib/api'
 
 export default function JobStatusPage() {
+  const { token } = useAuth({ requireAuth: true })
   const params = useParams()
   const jobId = params?.jobId
   const [status, setStatus] = useState('loading')
   const [payload, setPayload] = useState(null)
   const [error, setError] = useState(null)
 
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
+
   useEffect(() => {
     let cancelled = false
 
     async function poll() {
       try {
-        const res = await fetch(`http://localhost:8000/api/jobs/${jobId}`, {
-          headers: { 'Authorization': 'Bearer test-token' },
+        const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
+          headers: { 'Authorization': authHeader() },
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const j = await res.json()

@@ -1,7 +1,10 @@
 "use client"
 import { useState, useEffect } from 'react'
+import { useAuth } from '../hooks/useAuth'
+import { API_BASE } from '../lib/api'
 
 export default function AgentsPage() {
+  const { token } = useAuth({ requireAuth: true })
   const [sharedUserId, setSharedUserId] = useState('')
   const [userSavedMsg, setUserSavedMsg] = useState('')
   const [spConcepts, setSpConcepts] = useState('Derivatives, Integrals')
@@ -50,6 +53,10 @@ export default function AgentsPage() {
     }
   }
 
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
+
   async function callStudyPlan() {
     setSpLoading(true)
     setStudyPlan(null)
@@ -58,9 +65,9 @@ export default function AgentsPage() {
       const body = { target_concepts, daily_minutes: Number(spDailyMinutes) }
       if (spExamDate) body.exam_date = spExamDate
       if (spResourceId) body.resource_id = spResourceId
-      const res = await fetch('http://localhost:8000/api/agent/study-plan', {
+      const res = await fetch(`${API_BASE}/api/agent/study-plan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -80,9 +87,9 @@ export default function AgentsPage() {
       const concepts = dqConcepts.split(',').map(s => s.trim()).filter(Boolean)
       const body = { concepts, count: Number(dqCount) }
       if (dqResourceId) body.resource_id = dqResourceId
-      const res = await fetch('http://localhost:8000/api/agent/daily-quiz', {
+      const res = await fetch(`${API_BASE}/api/agent/daily-quiz`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -101,9 +108,9 @@ export default function AgentsPage() {
     try {
       const body = { question: doubtQuestion }
       if (doubtResourceId) body.resource_id = doubtResourceId
-      const res = await fetch('http://localhost:8000/api/agent/doubt', {
+      const res = await fetch(`${API_BASE}/api/agent/doubt`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

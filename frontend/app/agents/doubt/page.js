@@ -1,7 +1,9 @@
 "use client"
 import { useState, useRef, useEffect } from 'react'
+import { useAuth } from '../../hooks/useAuth'
 
 export default function DoubtChatPage() {
+  const { token } = useAuth({ requireAuth: true })
   const [question, setQuestion] = useState('Explain the lumped capacitance method')
   const [resourceId, setResourceId] = useState('')
   const [userId, setUserId] = useState('')
@@ -22,6 +24,10 @@ export default function DoubtChatPage() {
     }
   }, [])
 
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
+
   async function ask() {
     if (!question.trim()) return
     const trimmedUser = userId.trim()
@@ -40,7 +46,7 @@ export default function DoubtChatPage() {
        body.user_id = trimmedUser
       const res = await fetch('http://localhost:8000/api/agent/doubt', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

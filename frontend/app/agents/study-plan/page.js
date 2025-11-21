@@ -1,8 +1,11 @@
 "use client"
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { useAuth } from '../../hooks/useAuth'
+import { API_BASE } from '../../lib/api'
 
-export default function StudyPlanPage() {
+function StudyPlanPageInner() {
+  const { token } = useAuth({ requireAuth: true })
   const [conceptsText, setConceptsText] = useState('Transient conduction, Lumped capacitance')
   const [dailyMinutes, setDailyMinutes] = useState(30)
   const [examDate, setExamDate] = useState('')
@@ -11,6 +14,10 @@ export default function StudyPlanPage() {
   const [plan, setPlan] = useState(null)
   const [error, setError] = useState(null)
   const searchParams = useSearchParams()
+
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
 
   useEffect(() => {
     // Prefill from `?concepts=...` if present
@@ -31,9 +38,9 @@ export default function StudyPlanPage() {
       const payload = { target_concepts: concepts, daily_minutes: Number(dailyMinutes) }
       if (examDate) payload.exam_date = examDate
       if (resourceId) payload.resource_id = resourceId
-      const res = await fetch('http://localhost:8000/api/agent/study-plan', {
+      const res = await fetch(`${API_BASE}/api/agent/study-plan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -82,5 +89,13 @@ export default function StudyPlanPage() {
         </div>
       )}
     </main>
+  )
+}
+
+export default function StudyPlanPage() {
+  return (
+    <Suspense fallback={<main style={{ padding: 24 }}><h1>Study Plan</h1></main>}>
+      <StudyPlanPageInner />
+    </Suspense>
   )
 }

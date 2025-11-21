@@ -1,7 +1,9 @@
 "use client"
 import { useState, useEffect } from 'react'
+import { useAuth } from '../../hooks/useAuth'
 
 export default function QuizPage() {
+  const { token } = useAuth({ requireAuth: true })
   const [conceptsText, setConceptsText] = useState('heat flux, Biot number')
   const [count, setCount] = useState(3)
   const [resourceId, setResourceId] = useState('')
@@ -14,6 +16,10 @@ export default function QuizPage() {
   const [error, setError] = useState(null)
   const [submitMsg, setSubmitMsg] = useState('')
   const [masteryUpdates, setMasteryUpdates] = useState([])
+
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
 
   const current = quiz[idx]
   const correct = graded && current && typeof current.answer_index === 'number' && Number(choice) === Number(current.answer_index)
@@ -44,7 +50,7 @@ export default function QuizPage() {
       if (resourceId) body.resource_id = resourceId
       const res = await fetch('http://localhost:8000/api/agent/daily-quiz', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -82,7 +88,7 @@ export default function QuizPage() {
       }
       const res = await fetch('http://localhost:8000/api/agent/quiz/answer', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

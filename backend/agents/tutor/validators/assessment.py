@@ -21,6 +21,7 @@ def assess_student_response(
     student_message: str,
     expected_concept: str,
     reference_chunks: List[Dict[str, Any]] | None,
+    question_context: str | None = None,
 ) -> Dict[str, Any]:
     use_mock = os.getenv("USE_LLM_MOCK", "0").strip() in {"1", "true", "TRUE"}
     if use_mock:
@@ -29,15 +30,18 @@ def assess_student_response(
         quality = 0.8 if is_correct else 0.4
         return {"correct": is_correct, "quality": quality, "reasoning": "mock"}
 
-    prompt = (
-        "Student is learning about: "
-        + (expected_concept or "")
-        + "\n\nReference material:\n"
-        + _format_chunks(reference_chunks)
-        + "\n\nStudent said: \""
-        + (student_message or "")
-        + "\"\n\nAssess and return JSON with keys: correct (true/false/unclear), quality (0-1), reasoning (short)."
-    )
+    prompt_parts = [
+        "Student is learning about: " + (expected_concept or ""),
+        "\nReference material:\n" + _format_chunks(reference_chunks),
+    ]
+    
+    if question_context:
+        prompt_parts.append(f"\nTutor asked: \"{question_context}\"")
+        
+    prompt_parts.append(f"\nStudent said: \"{student_message or ''}\"")
+    prompt_parts.append("\nAssess and return JSON with keys: correct (true/false/unclear), quality (0-1), reasoning (short).")
+    
+    prompt = "\n".join(prompt_parts)
 
     try:
         from llm.common import call_json_chat

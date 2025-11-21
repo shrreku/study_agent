@@ -26,15 +26,15 @@ def execute_action(
     a = (action or "").lower().strip() or "explain"
 
     if a == "ask":
-        text, conf, src_ids = build_followup_question(concept, level, chunks)
+        text, conf, src_ids = build_followup_question(concept, level, chunks, message=message)
         return text, float(conf), list(src_ids or []), concept
 
     if a == "hint":
-        text, conf, src_ids = build_hint_response(concept, level, chunks)
+        text, conf, src_ids = build_hint_response(concept, level, chunks, message=message)
         return text, float(conf), list(src_ids or []), concept
 
     if a == "reflect":
-        text, conf, src_ids = build_reflect_response(concept, level, chunks)
+        text, conf, src_ids = build_reflect_response(concept, level, chunks, message=message)
         return text, float(conf), list(src_ids or []), concept
 
     if a == "review":
@@ -47,11 +47,11 @@ def execute_action(
 
     if plan is not None:
         text, conf, src_ids, inferred = generate_explain_response_with_plan(
-            plan=plan, concept=concept, level=level, chunks=chunks
+            plan=plan, concept=concept, level=level, chunks=chunks, message=message
         )
         return text, float(conf), list(src_ids or []), (inferred or concept)
 
     text, conf, src_ids, inferred = generate_explain_response(
-        concept, level, chunks
+        concept, level, chunks, message=message
     )
     return text, float(conf), list(src_ids or []), (inferred or concept)

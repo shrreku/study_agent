@@ -16,7 +16,7 @@ import requests
 import time
 from metrics import MetricsCollector
 from prompts import active_set as prompts_active_set
-from llm.common import _extract_json_blob, _repair_json  # type: ignore
+from llm.common import _extract_json_blob, _repair_json, model_supports_json_mode  # type: ignore
 
 
 MATH_PATTERNS = [
@@ -438,13 +438,22 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     try:
-        use_json_mode = os.getenv("LLM_RESPONSE_FORMAT_JSON", "1").lower() in ("1", "true", "yes")
+        requested_json_mode = os.getenv("LLM_RESPONSE_FORMAT_JSON", "1").lower() in ("1", "true", "yes")
     except Exception:
-        use_json_mode = True
+        requested_json_mode = True
+    supports_json_mode = model_supports_json_mode(model)
+    use_json_mode = requested_json_mode and supports_json_mode and not is_reasoning_model
     
     # Reasoning models don't support json_object mode and need special handling
-    if not is_reasoning_model and use_json_mode:
+    if use_json_mode:
         body["response_format"] = {"type": "json_object"}
+
+    logging.info(
+        "llm_json_request model=%s url=%s prompt_chars=%d",
+        model,
+        url,
+        len(user_content),
+    )
     t0 = time.time()
     try:
         resp = requests.post(url, headers=headers, json=body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
@@ -477,6 +486,12 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
                 mc.increment(f"llm_json_calls_total_ps_{ps}")
             except Exception:
                 pass
+            elapsed_ms = int((time.time() - t0) * 1000)
+            logging.info(
+                "llm_json_success model=%s elapsed_ms=%d",
+                model,
+                elapsed_ms,
+            )
             return parsed
         # Retry once with ultra-strict sentinel guidance
         logging.warning("llm_json_parse_failed_first_try; retrying with sentinel-wrapped JSON prompt")
@@ -490,7 +505,7 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
             "max_tokens": int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "800")),
             "stream": False,
         }
-        if not is_reasoning_model and use_json_mode:
+        if use_json_mode:
             retry_body["response_format"] = {"type": "json_object"}
         resp2 = requests.post(url, headers=headers, json=retry_body, timeout=int(os.getenv("LLM_TIMEOUT_SECS", "60")))
         if not (200 <= resp2.status_code < 300):
@@ -521,6 +536,12 @@ def call_llm_json(prompt: str, default: Dict[str, Any]) -> Dict[str, Any]:
                 mc.increment(f"llm_json_calls_total_ps_{ps}")
             except Exception:
                 pass
+            elapsed_ms = int((time.time() - t0) * 1000)
+            logging.info(
+                "llm_json_success model=%s elapsed_ms=%d (retry)",
+                model,
+                elapsed_ms,
+            )
             return parsed2
         return default
     except Exception:

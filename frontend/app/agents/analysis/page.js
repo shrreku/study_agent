@@ -1,13 +1,19 @@
 "use client"
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '../../hooks/useAuth'
 
 export default function AnalysisPage() {
+  const { token } = useAuth({ requireAuth: true })
   const [userId, setUserId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [data, setData] = useState(null)
   const router = useRouter()
+
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
 
   async function runAnalysis() {
     setError(null)
@@ -20,7 +26,7 @@ export default function AnalysisPage() {
       setLoading(true)
       const res = await fetch('http://localhost:8000/api/agent/analysis', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify({ user_id: userId.trim() })
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

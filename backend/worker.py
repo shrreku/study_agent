@@ -6,6 +6,7 @@ from rq import Queue, Connection, Worker
 from ingestion.parse_utils import extract_text_by_type
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from core.storage import download_object_to_path
 
 
 def get_redis():
@@ -52,13 +53,11 @@ def process_parse_job(job_id, resource_id, storage_path):
                     break
 
         if not local_path:
-            # try downloading from MinIO
+            # try downloading from active storage backend (GCS or MinIO)
             try:
-                from minio import Minio
-                m = Minio(os.getenv("MINIO_ENDPOINT", "minio:9000"), access_key=os.getenv("MINIO_ROOT_USER", "minioadmin"), secret_key=os.getenv("MINIO_ROOT_PASSWORD", "minioadmin"), secure=os.getenv("MINIO_SECURE", "false").lower() in ("1","true","yes"))
                 bucket, obj = storage_path.split("/", 1)
                 tmpfile = os.path.join(os.getcwd(), "tmp_" + obj)
-                m.fget_object(bucket, obj, tmpfile)
+                download_object_to_path(storage_path, tmpfile)
                 local_path = tmpfile
             except Exception:
                 local_path = None

@@ -1,23 +1,13 @@
 ingest:
   # Enhanced page structure analysis with semantic units and content types
   page_structure_v2: |
-    Analyze this textbook page and identify semantic units with content-type classification.
-    Page Number: {{page_number}}
-    Page Text:
+    Task: split this textbook page into sections and semantic chunks for downstream tagging.
+
+    Page {{page_number}} text:
     {{page_text}}
-    
-    Identify sections and semantic chunks with the following structure:
-    - Sections: hierarchical structure with number, title, start/end character positions, and level
-    - Chunks: semantic units (concept intro, derivation, example, theorem, summary) with precise boundaries
-    
-    For each chunk, classify its:
-    - Content type: concept_intro, derivation, example, theorem, summary, definition, problem, solution
-    - Cognitive level: remember, understand, apply, analyze, evaluate, create (Bloom's taxonomy)
-    - Difficulty: introductory, intermediate, advanced
-    
-    Detect figures, equations, and their labels. Preserve mathematical formulas with surrounding context.
-    
-    Return ONLY valid JSON in this exact format:
+
+    Output ONLY valid JSON in this structure (no extra text):
+
     {
       "sections": [
         {
@@ -33,20 +23,18 @@ ingest:
           "start": 0,
           "end": 250,
           "type": "concept_intro",
-          "cognitive_level": "understand",
-          "difficulty": "introductory",
           "section_number": "1.2.3",
           "section_title": "Section Title",
-          "section_level": 3,
-          "has_figure": false,
-          "has_equation": true,
-          "figure_labels": [],
-          "equation_labels": ["eq:1.1"],
-          "caption": null,
-          "tags": ["tag1", "tag2"]
+          "section_level": 3
         }
       ]
     }
+
+    Guidelines:
+    - Sections: coarse structure of the page using 0-based character indices into page_text.
+    - Chunks: contiguous spans that should be processed together (typically 3-10 per page).
+    - Ensure 0 <= start < end <= len(page_text) and chunks are not empty.
+    - Keep metadata minimal; later tagging steps will add detailed labels.
 
   # Hierarchical educational tagging with taxonomy and prerequisites
   chunk_tags_hierarchical: |

@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 """,
         """
+CREATE TABLE IF NOT EXISTS llm_model (
+  id TEXT PRIMARY KEY,
+  provider TEXT,
+  model_name TEXT NOT NULL,
+  display_name TEXT,
+  cost_hint NUMERIC,
+  latency_hint NUMERIC,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE
+);
+""",
+        """
+ALTER TABLE app_user
+  ADD COLUMN IF NOT EXISTS display_name TEXT,
+  ADD COLUMN IF NOT EXISTS role TEXT,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+""",
+        """
 CREATE TABLE IF NOT EXISTS resource (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES app_user(id) NULL,
@@ -56,6 +73,12 @@ CREATE TABLE IF NOT EXISTS resource (
   storage_path TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+""",
+        """
+ALTER TABLE resource
+  ADD COLUMN IF NOT EXISTS status TEXT,
+  ADD COLUMN IF NOT EXISTS error_message TEXT,
+  ADD COLUMN IF NOT EXISTS metadata JSONB;
 """,
         """
 CREATE TABLE IF NOT EXISTS extracted_page (
@@ -150,6 +173,16 @@ CREATE TABLE IF NOT EXISTS user_doubt (
 );
 """,
         """
+CREATE TABLE IF NOT EXISTS user_resource_concept_feedback (
+  user_id UUID NOT NULL,
+  resource_id UUID NOT NULL,
+  concept TEXT NOT NULL,
+  feedback_type TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, resource_id, concept, feedback_type)
+);
+""",
+        """
 CREATE TABLE IF NOT EXISTS tutor_session (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
@@ -162,6 +195,15 @@ CREATE TABLE IF NOT EXISTS tutor_session (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+""",
+        """
+ALTER TABLE tutor_session
+  ADD COLUMN IF NOT EXISTS mode TEXT,
+  ADD COLUMN IF NOT EXISTS agent_action_mode TEXT,
+  ADD COLUMN IF NOT EXISTS resource_ids UUID[],
+  ADD COLUMN IF NOT EXISTS config JSONB,
+  ADD COLUMN IF NOT EXISTS model_strategy_type TEXT,
+  ADD COLUMN IF NOT EXISTS model_ids TEXT[];
 """,
         """
 CREATE INDEX IF NOT EXISTS idx_tutor_session_user_created ON tutor_session (user_id, created_at DESC);
@@ -184,6 +226,18 @@ CREATE TABLE IF NOT EXISTS tutor_turn (
 );
 """,
         """
+ALTER TABLE tutor_turn
+  ADD COLUMN IF NOT EXISTS proposed_action TEXT,
+  ADD COLUMN IF NOT EXISTS user_choice TEXT,
+  ADD COLUMN IF NOT EXISTS model_id TEXT,
+  ADD COLUMN IF NOT EXISTS model_name TEXT,
+  ADD COLUMN IF NOT EXISTS tool_calls JSONB,
+  ADD COLUMN IF NOT EXISTS retrieval_metadata JSONB,
+  ADD COLUMN IF NOT EXISTS policy_trace JSONB,
+  ADD COLUMN IF NOT EXISTS candidates JSONB,
+  ADD COLUMN IF NOT EXISTS preference_rating JSONB;
+""",
+        """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tutor_turn_session_turn_index ON tutor_turn (session_id, turn_index);
 """,
         """
@@ -200,6 +254,18 @@ CREATE TABLE IF NOT EXISTS tutor_event (
 """,
         """
 CREATE INDEX IF NOT EXISTS idx_tutor_event_session_created ON tutor_event (session_id, created_at);
+""",
+        """
+CREATE TABLE IF NOT EXISTS tutor_annotation (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  turn_id UUID NOT NULL REFERENCES tutor_turn(id) ON DELETE CASCADE,
+  labeler_id UUID REFERENCES app_user(id) ON DELETE SET NULL,
+  correctness SMALLINT,
+  helpfulness SMALLINT,
+  coverage SMALLINT,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """,
     ]
     conn = None

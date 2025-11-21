@@ -21,7 +21,11 @@ def orchestrator_dispatch(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
         "daily-quiz": {"required": ["concepts"]},
         "doubt": {"required": ["question"]},
         "analysis": {"required": ["user_id"]},
-        "tutor": {"required": ["message", "user_id"]},
+        # For the tutor agent, only "user_id" is required at this layer.
+        # Message presence/emptiness is validated inside tutor_agent so that
+        # pure control turns (step_control, mcq_answer, confirmed_action)
+        # can be sent without free-text.
+        "tutor": {"required": ["user_id"]},
         "mock": {"required": []},
     }
 

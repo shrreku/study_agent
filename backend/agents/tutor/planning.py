@@ -44,34 +44,68 @@ class TutorPlanner:
 
         # Build planning prompt
         template = prompt_get("tutor.srl_planning")
+        
+        # Extract fields (handling both legacy nested and new flat formats for safety)
+        student_message = observation.get("student_message") or (observation.get("user", {}) or {}).get("message", "")
+        intent = observation.get("intent") or (observation.get("classifier", {}) or {}).get("intent", "unknown")
+        affect = observation.get("affect") or (observation.get("classifier", {}) or {}).get("affect", "neutral")
+        focus_concept = observation.get("focus_concept") or (observation.get("tutor", {}) or {}).get("focus_concept", "unknown")
+        student_level = observation.get("student_level") or (observation.get("tutor", {}) or {}).get("concept_level", "beginner")
+        previous_action = observation.get("previous_action") or (observation.get("policy", {}) or {}).get("last_action", "none")
+        recent_history = observation.get("recent_history", "")
+        
+        # Prefer passed-in student_state for mastery/path, fallback to observation
+        learning_path_list = (student_state or {}).get("learning_path") or observation.get("learning_path") or []
+        learning_path_str = ", ".join(learning_path_list) if isinstance(learning_path_list, list) else str(learning_path_list)
+        
+        mastery_map = (student_state or {}).get("mastery_map") or observation.get("mastery_snapshot") or {}
+
         prompt = prompt_render(
             template,
             {
-                "student_message": (observation.get("user", {}) or {}).get("message", ""),
-                "intent": (observation.get("classifier", {}) or {}).get("intent", "unknown"),
-                "affect": (observation.get("classifier", {}) or {}).get("affect", "neutral"),
-                "focus_concept": (observation.get("tutor", {}) or {}).get("focus_concept", "unknown"),
-                "student_level": (observation.get("tutor", {}) or {}).get("concept_level", "beginner"),
-                "mastery_snapshot": self._format_mastery((student_state or {}).get("mastery_map", {})),
-                "learning_path": ", ".join((student_state or {}).get("learning_path", [])),
+                "student_message": student_message,
+                "intent": intent,
+                "affect": affect,
+                "focus_concept": focus_concept,
+                "student_level": student_level,
+                "mastery_snapshot": self._format_mastery(mastery_map),
+                "learning_path": learning_path_str,
                 "available_actions": ", ".join(available_actions or []),
-                "previous_action": (observation.get("policy", {}) or {}).get("last_action", "none"),
+                "previous_action": previous_action,
+                "recent_history": recent_history,
             },
         )
 
+        # Extract variables for logic
+        # (Already extracted above)
+
+        # Dynamic default plan based on intent
+        default_action = "explain"
+        default_rationale = "Default to explanation."
+        
+        if str(intent) == "answer":
+            default_action = "reflect"
+            default_rationale = "Student answered, should reflect and check understanding."
+        elif str(intent) == "question":
+            default_action = "explain"
+            default_rationale = "Student asked a question, provide explanation."
+        elif str(affect) in {"confused", "frustrated"}:
+            default_action = "hint"
+            default_rationale = "Student seems stuck, offer a hint."
+
         default_plan = {
-            "thinking": "Student asked a question. I should provide a clear explanation.",
-            "intended_action": "explain",
-            "action_rationale": "Default to explanation for questions.",
-            "retrieval_query": (observation.get("tutor", {}) or {}).get("focus_concept", ""),
-            "pedagogy_focus": ["definition", "explanation"],
+            "thinking": f"Student intent is {intent}. I should {default_action}.",
+            "intended_action": default_action,
+            "action_rationale": default_rationale,
+            "retrieval_query": str(focus_concept),
+            "pedagogy_focus": ["definition", "explanation"] if default_action == "explain" else ["concept_check"],
             "difficulty_cap": "intermediate",
             "confidence": 0.6,
             "assumptions": ["Student has basic understanding"],
             "risks": ["May be too advanced"],
             "steps": [
-                {"action": "explain", "rationale": "Cover basics clearly", "pedagogy_focus": ["definition", "explanation"]},
-                {"action": "ask", "rationale": "Check fluency and misconceptions", "pedagogy_focus": ["concept_check"]},
+                {"action": default_action, "rationale": default_rationale, "pedagogy_focus": ["definition", "explanation"]},
+                {"action": "ask", "rationale": "Check fluency", "pedagogy_focus": ["concept_check"]},
             ],
             "target_sequence": [],
         }
@@ -101,7 +135,7 @@ class TutorPlanner:
                 thinking="",
                 intended_action="explain",
                 action_rationale="",
-                retrieval_query=(observation.get("tutor", {}) or {}).get("focus_concept", ""),
+                retrieval_query=str(focus_concept),
                 pedagogy_focus=["explanation"],
                 difficulty_cap="intermediate",
                 confidence=0.5,
@@ -112,12 +146,11 @@ class TutorPlanner:
             )
 
     def _rule_based_plan(self, observation: Dict, student_state: Dict) -> TutorPlan:
-        classifier = observation.get("classifier", {}) or {}
-        tutor = observation.get("tutor", {}) or {}
-
-        affect = str(classifier.get("affect", "neutral") or "neutral").lower()
-        intent = str(classifier.get("intent", "unknown") or "unknown").lower()
-        level = str(tutor.get("concept_level", "beginner") or "beginner").lower()
+        # Support both flat and nested
+        affect = str(observation.get("affect") or (observation.get("classifier", {}) or {}).get("affect", "neutral") or "neutral").lower()
+        intent = str(observation.get("intent") or (observation.get("classifier", {}) or {}).get("intent", "unknown") or "unknown").lower()
+        level = str(observation.get("student_level") or (observation.get("tutor", {}) or {}).get("concept_level", "beginner") or "beginner").lower()
+        focus_concept = str(observation.get("focus_concept") or (observation.get("tutor", {}) or {}).get("focus_concept", "") or "")
 
         if affect in {"confused", "frustrated"}:
             action = "hint"
@@ -140,7 +173,7 @@ class TutorPlanner:
             thinking="[Rule-based fallback]",
             intended_action=action,
             action_rationale=rationale,
-            retrieval_query=str(tutor.get("focus_concept", "")),
+            retrieval_query=focus_concept,
             pedagogy_focus=pedagogy,
             difficulty_cap="intermediate" if level == "beginner" else "advanced",
             confidence=0.7,

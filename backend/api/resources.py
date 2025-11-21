@@ -12,11 +12,11 @@ import tempfile
 import logging
 import json
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 
 from core.auth import require_auth
 from core.db import get_db_conn
-from core.storage import get_minio_client
+from core.storage import get_minio_client, upload_bytes_to_object, download_object_to_path, is_gcs_enabled, get_notes_bucket
 from kg_pipeline import (
     canonicalize_concept,
     merge_concepts_in_neo4j,
@@ -33,12 +33,458 @@ from kg_pipeline import (
 )
 from kg_pipeline.enhanced_graph_builder import build_enhanced_educational_kg
 from metrics import MetricsCollector
-from llm import extract_pedagogy_relations, tag_and_extract
+from llm import extract_pedagogy_relations, tag_and_extract, call_json_chat
 from llm.common import model_override_context
 from ingestion import embed as embed_service
 from ingestion.chunker import structural_chunk_resource, enhanced_structural_chunk_resource
+from agents.tutor.knowledge import fetch_mastery_map, fetch_prereq_chain
+from agents.tutor.policy import level_for_mastery
+from agents.tutor.retrieval import retrieve_chunks
 
 router = APIRouter()
+
+
+class ResourceConceptsRequest(BaseModel):
+    resource_ids: List[str]
+
+
+class ResourceConceptSummary(BaseModel):
+    concept: str
+    canonical: str
+    mastery: Optional[float] = None
+    level: Optional[str] = None
+    occurrences: int
+    resource_ids: List[str]
+    pages: List[int]
+    pedagogy_roles: Dict[str, int]
+    path_index: Optional[int] = None
+    hidden: bool = False
+
+
+class ConceptSummaryRequest(BaseModel):
+    concept: str
+    resource_ids: List[str]
+    max_chunks: Optional[int] = 6
+
+
+class ConceptSummaryResponse(BaseModel):
+    concept: str
+    summary: str
+    chunk_ids: List[str]
+
+
+class ResourceConceptFeedbackRequest(BaseModel):
+    resource_ids: List[str]
+    concept: str
+    feedback_type: str = "hide"
+
+
+@router.post("/api/resources/concepts")
+async def list_resource_concepts(
+    body: ResourceConceptsRequest,
+    user_id: str = Depends(require_auth),
+) -> List[ResourceConceptSummary]:
+    """Aggregate concept summaries for a set of resources owned by the current user.
+
+    Returns per-concept coverage across resources, pedagogy-role counts,
+    and mastery level for the user when available.
+    """
+    raw_ids = body.resource_ids or []
+    resource_ids = [rid.strip() for rid in raw_ids if rid and rid.strip()]
+    if not resource_ids:
+        return []
+
+    hidden_keys: set[str] = set()
+
+    conn = get_db_conn()
+    try:
+        # Validate ownership and normalise resource ids
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, user_id::text AS user_id
+                FROM resource
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (resource_ids,),
+            )
+            rows = cur.fetchall() or []
+
+            owned_ids = {r["id"] for r in rows if str(r.get("user_id")) == str(user_id)}
+
+            if not owned_ids:
+                raise HTTPException(status_code=404, detail="no_resources_found")
+
+            if len(owned_ids) != len(set(resource_ids)):
+                # At least one requested resource is not owned by this user
+                raise HTTPException(status_code=403, detail="forbidden_resource_access")
+
+            cur.execute(
+                """
+                SELECT
+                    resource_id::text AS resource_id,
+                    c AS concept,
+                    COUNT(*) AS occurrences,
+                    array_agg(DISTINCT page_number) AS pages,
+                    array_remove(array_agg(DISTINCT (tags->>'pedagogy_role')), NULL) AS roles
+                FROM (
+                    SELECT
+                        resource_id,
+                        page_number,
+                        tags,
+                        unnest(concepts) AS c
+                    FROM chunk
+                    WHERE resource_id = ANY(%s::uuid[])
+                      AND concepts IS NOT NULL
+                ) t
+                GROUP BY resource_id, c
+                """,
+                (list(owned_ids),),
+            )
+            concept_rows = cur.fetchall() or []
+
+            cur.execute(
+                """
+                SELECT concept
+                FROM user_resource_concept_feedback
+                WHERE user_id = %s::uuid
+                  AND resource_id = ANY(%s::uuid[])
+                  AND feedback_type = 'hide'
+                """,
+                (user_id, list(owned_ids)),
+            )
+            feedback_rows = cur.fetchall() or []
+
+            for fb in feedback_rows:
+                raw_fb = (fb.get("concept") or "").strip()
+                if not raw_fb:
+                    continue
+                can_fb, _disp_fb = canonicalize_concept(raw_fb)
+                key_fb = (can_fb or raw_fb).strip().lower()
+                if key_fb:
+                    hidden_keys.add(key_fb)
+
+        # Fetch mastery map using a plain cursor (fetch_mastery_map expects tuple rows)
+        with conn.cursor() as cur2:
+            mastery_map = fetch_mastery_map(cur2, user_id)
+    finally:
+        conn.close()
+
+    # Aggregate per canonical concept
+    concept_map: Dict[str, Dict[str, Any]] = {}
+    for row in concept_rows:
+        raw = (row.get("concept") or "").strip()
+        if not raw:
+            continue
+        try:
+            occurrences = int(row.get("occurrences") or 0)
+        except Exception:
+            occurrences = 0
+        canonical, display = canonicalize_concept(raw)
+        key = (canonical or raw).strip().lower()
+        display_name = display or raw
+
+        entry = concept_map.get(key)
+        if entry is None:
+            entry = {
+                "concept": display_name,
+                "canonical": canonical or raw,
+                "occurrences": 0,
+                "resource_ids": set(),
+                "pages": set(),
+                "pedagogy_roles": {},
+            }
+            concept_map[key] = entry
+
+        entry["occurrences"] += occurrences
+        entry["resource_ids"].add(row.get("resource_id"))
+
+        for p in row.get("pages") or []:
+            if p is not None:
+                try:
+                    entry["pages"].add(int(p))
+                except Exception:
+                    continue
+
+        roles = row.get("roles") or []
+        if roles:
+            role_counts: Dict[str, int] = entry["pedagogy_roles"]
+            for role in roles:
+                if not role:
+                    continue
+                role_counts[role] = role_counts.get(role, 0) + 1
+
+    if not concept_map:
+        return []
+
+    # Compute learning path ordering (optional, best effort).
+    # We normalise names so that minor casing or spacing differences between
+    # Neo4j and our canonical labels do not break the mapping.
+    path_inputs = []
+    for entry in concept_map.values():
+        cid = entry.get("canonical") or entry.get("concept")
+        if cid:
+            path_inputs.append(str(cid))
+    path_inputs = list(dict.fromkeys(path_inputs))  # de-duplicate while preserving order
+
+    path_index_map: Dict[str, int] = {}
+    if path_inputs:
+        try:
+            ordered = fetch_prereq_chain(path_inputs)
+            tmp: Dict[str, int] = {}
+            for idx, name in enumerate(ordered or []):
+                norm = (str(name) if name is not None else "").strip().lower()
+                if norm and norm not in tmp:
+                    tmp[norm] = idx
+            path_index_map = tmp
+        except Exception:
+            path_index_map = {}
+
+    # Build response objects with mastery and level
+    summaries: List[ResourceConceptSummary] = []
+    for entry in concept_map.values():
+        canonical_name = entry.get("canonical") or entry.get("concept")
+        display_name = entry.get("concept") or canonical_name or ""
+
+        mastery: Optional[float] = None
+        level: Optional[str] = None
+        if canonical_name:
+            info = mastery_map.get(canonical_name) or mastery_map.get(display_name)
+            if info is not None:
+                try:
+                    mastery = float(info.get("mastery")) if info.get("mastery") is not None else None
+                except Exception:
+                    mastery = None
+        if mastery is not None:
+            level = level_for_mastery(mastery)
+
+        cid_for_path = str(canonical_name) if canonical_name is not None else display_name
+        norm_cid = (cid_for_path or "").strip().lower()
+        path_idx = path_index_map.get(norm_cid)
+
+        key_for_hidden = str(canonical_name or display_name).strip().lower() if (canonical_name or display_name) else ""
+        is_hidden = key_for_hidden in hidden_keys
+
+        summaries.append(
+            ResourceConceptSummary(
+                concept=display_name,
+                canonical=str(canonical_name or display_name),
+                mastery=mastery,
+                level=level,
+                occurrences=int(entry.get("occurrences") or 0),
+                resource_ids=sorted(rid for rid in entry.get("resource_ids") or [] if rid),
+                pages=sorted(int(p) for p in entry.get("pages") or []),
+                pedagogy_roles=entry.get("pedagogy_roles") or {},
+                path_index=path_idx,
+                hidden=is_hidden,
+            )
+        )
+
+    # Sort by path_index (if available), then by ascending mastery, then by name
+    def _sort_key(s: ResourceConceptSummary):
+        has_path = 0 if s.path_index is not None else 1
+        path_val = s.path_index if s.path_index is not None else 0
+        mastery_val = s.mastery if s.mastery is not None else 1.0
+        return (has_path, path_val, mastery_val, s.concept.lower())
+
+    summaries.sort(key=_sort_key)
+    return summaries
+
+
+@router.post("/api/resources/concepts/feedback")
+async def submit_resource_concept_feedback(
+    body: ResourceConceptFeedbackRequest,
+    user_id: str = Depends(require_auth),
+):
+    raw_ids = body.resource_ids or []
+    resource_ids = [rid.strip() for rid in raw_ids if rid and rid.strip()]
+    concept = (body.concept or "").strip()
+    feedback_type = (body.feedback_type or "hide").strip() or "hide"
+
+    if not resource_ids:
+        raise HTTPException(status_code=400, detail="resource_ids_required")
+    if not concept:
+        raise HTTPException(status_code=400, detail="concept_required")
+
+    canonical, _display = canonicalize_concept(concept)
+    concept_key = (canonical or concept).strip()
+    if not concept_key:
+        raise HTTPException(status_code=400, detail="concept_required")
+
+    conn = get_db_conn()
+    updated = 0
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, user_id::text AS user_id
+                FROM resource
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (resource_ids,),
+            )
+            rows = cur.fetchall() or []
+
+            owned_ids = [r["id"] for r in rows if str(r.get("user_id")) == str(user_id)]
+            if not owned_ids:
+                raise HTTPException(status_code=404, detail="no_resources_found")
+
+            if len(owned_ids) != len(set(resource_ids)):
+                raise HTTPException(status_code=403, detail="forbidden_resource_access")
+
+            for rid in owned_ids:
+                cur.execute(
+                    """
+                    INSERT INTO user_resource_concept_feedback (user_id, resource_id, concept, feedback_type)
+                    VALUES (%s::uuid, %s::uuid, %s, %s)
+                    ON CONFLICT (user_id, resource_id, concept, feedback_type) DO NOTHING
+                    """,
+                    (user_id, rid, concept_key, feedback_type),
+                )
+            conn.commit()
+            updated = len(owned_ids)
+    finally:
+        conn.close()
+
+    return {"ok": True, "updated": updated}
+
+
+@router.post("/api/resources/concepts/summary")
+async def summarize_concept_from_resources(
+    body: ConceptSummaryRequest,
+    user_id: str = Depends(require_auth),
+) -> ConceptSummaryResponse:
+    """Summarise a concept using chunks drawn from the user's resources.
+
+    This is a best-effort helper used by the Tutor concepts sidebar for
+    expanded concept summaries. It relies on the same retrieval pipeline
+    as the tutor agent.
+    """
+
+    concept = (body.concept or "").strip()
+    if not concept:
+        raise HTTPException(status_code=400, detail="concept_required")
+
+    raw_ids = body.resource_ids or []
+    resource_ids = [rid.strip() for rid in raw_ids if rid and rid.strip()]
+    if not resource_ids:
+        raise HTTPException(status_code=400, detail="resource_ids_required")
+
+    conn = get_db_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text AS id, user_id::text AS user_id
+                FROM resource
+                WHERE id = ANY(%s::uuid[])
+                """,
+                (resource_ids,),
+            )
+            rows = cur.fetchall() or []
+
+            owned_ids = {r["id"] for r in rows if str(r.get("user_id")) == str(user_id)}
+
+            if not owned_ids:
+                raise HTTPException(status_code=404, detail="no_resources_found")
+
+            if len(owned_ids) != len(set(resource_ids)):
+                # At least one requested resource is not owned by this user
+                raise HTTPException(status_code=403, detail="forbidden_resource_access")
+    finally:
+        conn.close()
+
+    # Retrieve relevant chunks per resource and merge
+    max_chunks = body.max_chunks or 6
+    pedagogy_roles = ["definition", "example", "application"]
+
+    all_chunks: List[Dict[str, Any]] = []
+    for rid in owned_ids:
+        try:
+            chunks = retrieve_chunks(concept, rid, pedagogy_roles, k=max_chunks)
+        except Exception:
+            chunks = []
+        if chunks:
+            all_chunks.extend(chunks)
+
+    # De-duplicate by chunk id and keep highest-scoring first
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for c in all_chunks:
+        cid = str(c.get("id")) if c.get("id") is not None else None
+        if not cid:
+            continue
+        prev = dedup.get(cid)
+        if prev is None:
+            dedup[cid] = c
+            continue
+        try:
+            prev_score = float(prev.get("score") or 0.0)
+        except Exception:
+            prev_score = 0.0
+        try:
+            new_score = float(c.get("score") or 0.0)
+        except Exception:
+            new_score = 0.0
+        if new_score > prev_score:
+            dedup[cid] = c
+
+    unique_chunks = list(dedup.values())
+    if not unique_chunks:
+        return ConceptSummaryResponse(concept=concept, summary="", chunk_ids=[])
+
+    try:
+        unique_chunks.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+    except Exception:
+        pass
+
+    chosen = unique_chunks[:max_chunks]
+    chunk_ids: List[str] = [str(c.get("id")) for c in chosen if c.get("id")]
+
+    # Build context for LLM summarisation
+    context_lines: List[str] = []
+    for idx, c in enumerate(chosen, start=1):
+        snippet = (c.get("snippet") or "").strip()
+        if not snippet:
+            continue
+        page = c.get("page_number")
+        rid = c.get("resource_id")
+        if page is not None:
+            label = f"Resource {rid}, page {page}"
+        else:
+            label = f"Resource {rid}"
+        context_lines.append(f"[{idx}] ({label}) {snippet}")
+
+    context_text = "\n\n".join(context_lines) if context_lines else concept
+
+    default_payload: Dict[str, Any] = {"summary": "", "confidence": 0.5}
+    user_prompt = (
+        f"You are helping a university student revise the concept '{concept}'.\n\n"
+        "Using ONLY the context chunks below, write a concise explanation (3-5 sentences) that would help them revise.\n"
+        "Focus on the core idea and how it is used in this course. Avoid mentioning chunk IDs.\n\n"
+        "Context chunks:\n"
+        f"{context_text}\n\n"
+        "Return ONLY minified JSON with fields: summary (string), confidence (0.0-1.0)."
+    )
+
+    result = call_json_chat(
+        user_prompt,
+        default=default_payload,
+        system_prompt=(
+            "You are an educational assistant for engineering students. "
+            "Return ONLY minified JSON for the requested concept summary. No markdown."
+        ),
+        max_tokens=400,
+        text_field="summary",
+        allow_text_fallback=True,
+    )
+
+    summary_text = ""
+    try:
+        summary_text = str((result or {}).get("summary") or "").strip()
+    except Exception:
+        summary_text = ""
+
+    return ConceptSummaryResponse(concept=concept, summary=summary_text, chunk_ids=chunk_ids)
 
 
 def _get_chunker():
@@ -54,18 +500,8 @@ async def upload_resource(file: UploadFile = File(...), title: str = "", token: 
     contents = await file.read()
     if len(contents) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 100MB)")
-
-    minio_client = get_minio_client()
-    bucket = os.getenv("MINIO_BUCKET", "resources")
     try:
-        if not minio_client.bucket_exists(bucket):
-            minio_client.make_bucket(bucket)
-    except Exception:
-        pass
-
-    object_name = f"{uuid.uuid4()}_{file.filename}"
-    try:
-        minio_client.put_object(bucket, object_name, data=io.BytesIO(contents), length=len(contents), content_type=file.content_type)
+        storage_path = upload_bytes_to_object(contents, file.filename, file.content_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to store object: {e}")
 
@@ -74,7 +510,7 @@ async def upload_resource(file: UploadFile = File(...), title: str = "", token: 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 "INSERT INTO resource (id, title, filename, content_type, size_bytes, storage_path, created_at) VALUES (%s,%s,%s,%s,%s,%s,now()) RETURNING id, title, filename, size_bytes",
-                (str(uuid.uuid4()), title or file.filename, file.filename, file.content_type, len(contents), f"{bucket}/{object_name}")
+                (str(uuid.uuid4()), title or file.filename, file.filename, file.content_type, len(contents), storage_path)
             )
             row = cur.fetchone()
             conn.commit()
@@ -90,7 +526,7 @@ async def upload_resource(file: UploadFile = File(...), title: str = "", token: 
         redis = Redis.from_url(redis_url)
         q = Queue("parse", connection=redis)
         job_id = str(uuid.uuid4())
-        payload = {"resource_id": row["id"], "storage_path": f"{bucket}/{object_name}"}
+        payload = {"resource_id": row["id"], "storage_path": storage_path}
 
         conn = get_db_conn()
         try:
@@ -133,7 +569,7 @@ async def reindex_resource(
     if not resource_id or not resource_id.strip():
         raise HTTPException(status_code=400, detail="resource_id required")
 
-    # Resolve storage path for resource
+    # Resolve storage path for resource and mark status as chunking
     conn = get_db_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -143,6 +579,15 @@ async def reindex_resource(
                 raise HTTPException(status_code=404, detail="resource not found")
             storage = r["storage_path"]
             logging.info("reindex_start", extra={"resource_id": resource_id, "storage": storage})
+
+            try:
+                cur.execute(
+                    "UPDATE resource SET status=%s, error_message=NULL WHERE id=%s::uuid",
+                    ("chunking", resource_id),
+                )
+                conn.commit()
+            except Exception:
+                logging.exception("resource_status_update_failed", extra={"resource_id": resource_id, "phase": "chunking"})
     finally:
         conn.close()
 
@@ -161,12 +606,11 @@ async def reindex_resource(
     tmp_download_path = None
     if not local_path:
         try:
-            minio_client = get_minio_client()
             bucket, obj = storage.split("/", 1)
             tf = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(obj)[1] or "")
             tf.close()
             tmp_download_path = tf.name
-            minio_client.fget_object(bucket, obj, tmp_download_path)
+            download_object_to_path(storage, tmp_download_path)
             local_path = tmp_download_path
         except Exception as e:
             if tmp_download_path and os.path.exists(tmp_download_path):
@@ -174,7 +618,7 @@ async def reindex_resource(
                     os.unlink(tmp_download_path)
                 except Exception:
                     pass
-            raise HTTPException(status_code=400, detail=f"resource not available locally and MinIO download failed: {e}")
+            raise HTTPException(status_code=400, detail=f"resource not available locally and storage download failed: {e}")
 
     # Resolve per-request model overrides with env-based fallbacks
     models = models or ReindexModels()
@@ -246,6 +690,21 @@ async def reindex_resource(
     )
 
     inserted = updated = deleted = 0
+
+    # Before DB writes, mark phase as embedding (chunk-level operations)
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "UPDATE resource SET status=%s WHERE id=%s::uuid",
+                    ("embedding", resource_id),
+                )
+                conn.commit()
+            except Exception:
+                logging.exception("resource_status_update_failed", extra={"resource_id": resource_id, "phase": "embedding"})
+    finally:
+        conn.close()
 
     # Deletes
     if to_delete_ids:
@@ -537,6 +996,8 @@ async def reindex_resource(
                             tags_json[_fld] = _val
                     if isinstance(c.get("tags"), dict):
                         tags_json.update(c.get("tags"))
+
+                    tags_db_val = Json(tags_json)
                     
                     heading_text = " ".join(filter(None, [section_number, section_title]))
                     # tags_text for search - use old tags list if it exists
@@ -604,7 +1065,7 @@ async def reindex_resource(
                             figure_labels,
                             equation_labels,
                             caption,
-                            tags_json,
+                            tags_db_val,
                             text_snippet,
                             heading_text,
                             full_text,
@@ -931,12 +1392,11 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
     tmp_download_path = None
     if not local_path:
         try:
-            minio_client = get_minio_client()
             bucket, obj = storage.split("/", 1)
             tf = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(obj)[1] or "")
             tf.close()
             tmp_download_path = tf.name
-            minio_client.fget_object(bucket, obj, tmp_download_path)
+            download_object_to_path(storage, tmp_download_path)
             local_path = tmp_download_path
         except Exception as e:
             if tmp_download_path and os.path.exists(tmp_download_path):
@@ -944,7 +1404,7 @@ async def create_chunks(resource_id: str, force: bool = False, token: str = Depe
                     os.unlink(tmp_download_path)
                 except Exception:
                     pass
-            raise HTTPException(status_code=400, detail=f"resource not available locally and MinIO download failed: {e}")
+            raise HTTPException(status_code=400, detail=f"resource not available locally and storage download failed: {e}")
 
     chunker_fn = _get_chunker()
     chunks = chunker_fn(local_path)

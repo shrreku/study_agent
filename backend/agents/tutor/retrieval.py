@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import os
 
-from ..retrieval import hybrid_search, filter_relevant, _score_with_pedagogy
+from ..retrieval import hybrid_search, filter_relevant, _score_with_pedagogy, fetch_chunks_by_ids
 from .constants import logger
 
 
@@ -123,3 +123,32 @@ def retrieve_chunks(
     except Exception:
         logger.exception("tutor_retrieval_failed")
         return []
+
+
+def rehydrate_chunks_from_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
+    """Rehydrate chunks by ID for retrieval reuse.
+
+    Uses shared fetch_chunks_by_ids and emits a tutor-specific log event.
+    """
+    if not chunk_ids:
+        return []
+
+    try:
+        chunks = fetch_chunks_by_ids(chunk_ids)
+    except Exception:
+        logger.exception("tutor_tool_retrieval_reuse_failed")
+        return []
+
+    try:
+        logger.info(
+            "tutor_tool_retrieval_reuse",
+            extra={
+                "chunk_count": len(chunks or []),
+                "chunk_ids": [c.get("id") for c in (chunks or []) if c.get("id")],
+            },
+        )
+    except Exception:
+        # Best-effort logging only
+        pass
+
+    return chunks or []

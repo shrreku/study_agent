@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 import os
 import time
 import threading
+from contextlib import contextmanager
 
 try:
     import yaml  # type: ignore
@@ -20,6 +21,12 @@ except Exception:  # pragma: no cover - yaml is optional but recommended
 _LOCK = threading.Lock()
 _CACHE: Dict[str, Any] = {"set": None, "mtime": 0.0, "prompts": {}}
 _INGEST_CACHE: Dict[str, Any] = {"mtime": 0.0, "prompts": {}}
+_PROMPT_SET_OVERRIDE = threading.local()
+
+
+def _get_prompt_set_override() -> Optional[str]:
+    """Return the thread-local prompt set override if set."""
+    return getattr(_PROMPT_SET_OVERRIDE, "name", None)
 
 
 def _default_prompts() -> Dict[str, Any]:
@@ -79,7 +86,10 @@ def _default_prompts() -> Dict[str, Any]:
                 "Context:\n{{context}}"
             ),
             "ask": (
-                "Generate ONE grounded formative question.\n"
+                "Generate ONE grounded formative question to check the student's understanding of the concept.\n"
+                "Do NOT just summarize the text. Do NOT just quote the text.\n"
+                "Do NOT return a snippet. You must SYNTHESIZE a question.\n"
+                "Ask a question that requires the student to apply or explain the concept in their own words.\n"
                 "Return ONLY JSON: {\"question\": string, \"answer\": string, \"confidence\": number, \"options\": [..]}.\n"
                 "If context insufficient respond with: Let's review that from your materials first.\n"
                 "Concept: {{concept}}\n"
@@ -176,7 +186,16 @@ def _default_prompts() -> Dict[str, Any]:
 
 
 def _active_set_name() -> str:
-    return os.getenv("PROMPT_SET", "baseline").strip() or "baseline"
+    """Return the active prompt set name.
+
+    Defaults to 'auto_conversational' so auto-mode tutor prompts are used
+    without requiring PROMPT_SET to be configured. Other sets (e.g.
+    'baseline', 'concise') can still be selected explicitly via PROMPT_SET.
+    """
+    override = _get_prompt_set_override()
+    if override:
+        return str(override).strip() or "auto_conversational"
+    return os.getenv("PROMPT_SET", "auto_conversational").strip() or "auto_conversational"
 
 
 def _prompts_dir() -> str:
@@ -274,3 +293,26 @@ def render(template_str: str, vars: Dict[str, Any]) -> str:
 def active_set() -> str:
     """Expose the active prompt set name for metrics tagging."""
     return _active_set_name()
+
+
+@contextmanager
+def prompt_set_override(name: str):
+    """Temporarily override the active prompt set within the current thread.
+
+    Example uses:
+    - Force 'baseline' prompts for step-by-step SRL mode while keeping
+      'auto_conversational' as the global default for auto mode.
+    """
+
+    old = getattr(_PROMPT_SET_OVERRIDE, "name", None)
+    _PROMPT_SET_OVERRIDE.name = name
+    try:
+        yield
+    finally:
+        if old is None:
+            try:
+                delattr(_PROMPT_SET_OVERRIDE, "name")
+            except Exception:
+                pass
+        else:
+            _PROMPT_SET_OVERRIDE.name = old

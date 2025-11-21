@@ -11,6 +11,7 @@ python-pptx==0.6.21
 python-docx==0.8.11
 requests==2.31.0
 sentence-transformers==2.2.2
+google-cloud-storage==2.18.2
 # pgvector optional for local installs; skip strict pin to avoid platform issues
 neo4j==5.22.0
 pytest==7.4.4
@@ -22,3 +23,9 @@ langchain==0.3.7
 langchain-openai==0.2.8
 langchain-community==0.3.5
 langchain-experimental==0.3.3
+PyJWT==2.9.0
+passlib[bcrypt]==1.7.4
+email-validator==2.2.0
+
+# Pin bcrypt to a version compatible with passlib 1.7.4
+bcrypt==4.0.1

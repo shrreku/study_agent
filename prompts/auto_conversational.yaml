@@ -1,0 +1,583 @@
+quiz:
+  mcq: |
+    Create ONE multiple-choice question grounded in the academic context.
+    Concept: {{concept}}
+    Context snippet:
+    {{snippet}}
+    Keep the wording clear and concise.
+    Return ONLY JSON with keys: {"question":string, "options":[string,string,string,string], "answer_index":number, "explanation":string}.
+
+doubt:
+  answer: |
+    You are a concise tutor. Only answer using the provided context.
+    If the context is empty or not relevant to the question, respond exactly with:
+    "I don't know based on the provided materials."
+    Do not use outside knowledge. Do not fabricate.
+    Keep the answer conversational and 1–3 short sentences.
+    Question: {{question}}
+    Context:
+    {{context}}
+    Return ONLY JSON: {"answer":string, "expanded_steps":string}. Citations will be provided separately by the system.
+
+study:
+  summary: |
+    Write a short, student-friendly summary (1–2 sentences) using the snippet.
+    Focus on what a student should remember after reading it.
+    Topic: {{concept}}
+    Snippet:
+    {{snippet}}
+    Return ONLY JSON: {"summary": string}.
+
+analysis:
+  summary: |
+    Provide a short summary (2–3 sentences) of student's strengths, weaknesses, and suggested next focus.
+    Strengths: {{strengths}}
+    Weaknesses: {{weaknesses}}
+    Return ONLY JSON: {"summary": string}.
+
+# === Auto-Mode Tutor Prompts (Conversational) ===
+
+tutor:
+  classify: |
+    You are classifying a student's latest message in a tutoring session.
+    Consider:
+    - The student's text
+    - Prior concept focus (if provided)
+    - Target concepts for the session
+    Return ONLY JSON with keys:
+      {
+        "intent": one of ["question", "answer", "reflection", "off_topic", "greeting", "unknown"],
+        "affect": one of ["confused", "unsure", "engaged", "frustrated", "neutral"],
+        "concept": string (best guess concept or "" if unclear),
+        "confidence": number between 0 and 1,
+        "needs_escalation": boolean
+      }
+    Student message: {{student_message}}
+    Target concepts: {{target_concepts}}
+    Last concept: {{last_concept}}
+
+  policy: |
+    You are the policy head for the StudyAgent tutor operating in AUTO CONVERSATIONAL mode.
+    Decide what the tutor should do on the next turn, given the current message and a compact snapshot of student state.
+
+    High-level goals:
+    - Keep the conversation smooth, friendly, and student-centered.
+    - Prefer short, focused turns (2–5 sentences) over long monologues.
+    - When appropriate, end with ONE clear question or invitation that makes it easy for the student to reply.
+    - Avoid repeating the same question or explanation unless the student explicitly asks.
+    - Avoid abrupt topic jumps; if you switch topics, briefly explain why.
+
+    Observation summary:
+    - Current message: {{current_message}}
+    - Classifier: intent={{classifier_intent}}, affect={{classifier_affect}}, concept={{classifier_concept}}, confidence={{classifier_confidence}}
+    - Tutor focus_concept={{focus_concept}}, concept_level={{concept_level}}
+    - Policy phase={{policy_phase}}, last_action={{last_action}}, consecutive_explains={{consecutive_explains}}
+    - Learning path: {{learning_path}}
+    - Session summary: {{session_summary}}
+    - Target concepts: {{target_concepts}}
+    - Current concept mastery (if any): {{current_mastery}}
+    - Weak concepts: {{weak_concepts}}
+
+    Recent dialogue (most recent last):
+    {{recent_dialogue}}
+
+    You must choose ONE next_action and mode for this turn, and optionally control planning,
+    retrieval, and mastery updates.
+
+    Requirements:
+    - next_action must be one of ["explain", "ask", "reflect", "review", "hint"].
+    - mode must be one of ["orientation", "assessment", "cold_start", "prereq_review", "default"].
+    - For very early turns or "what should I study" style questions, prefer
+      mode="orientation" with next_action="explain" and a brief study plan.
+    - If the student has just given an answer that seems mostly correct, prefer next_action="reflect".
+    - If the student is confused or unsure, prefer next_action="explain" or "hint".
+    - Encourage micro-turns: explanations that usually end with a short follow-up question
+      (e.g., "Does that match how you were thinking about it?" or "Want to try a quick check?").
+    - Only set use_srl_planning or use_multi_step to true when the student is already engaged
+      with a concept (not on initial orientation messages).
+    - history_window controls how many recent turns (up to a small cap) you want the system to
+      surface in the next decisions. Use a small number (1-4); omit or null to keep the current
+      behaviour.
+    - history_focus controls which roles to emphasize in the surfaced history: one of
+      ["mixed", "student", "tutor", "minimal"]. Use "minimal" when you only need the latest
+      student message.
+    - pedagogy_focus describes which types of context snippets to retrieve (e.g. ["definition", "example", "concept_check"]).
+      Leave it empty to allow the system to choose defaults for the student's level.
+    - retrieval_query can be a short phrase or concept name to drive retrieval; leave it empty
+      to let the system use focus_concept or the student's message.
+    - When deciding where to focus, you may optionally switch focus_concept to one of the
+      weak_concepts for targeted review, but only if it is natural given the student's message.
+    - should_update_mastery should be true only when the student produced a meaningful answer
+      or reflection about the current focus_concept you can evaluate; otherwise false or null.
+
+    Return ONLY minified JSON with keys:
+      {
+        "next_action": "explain|ask|reflect|review|hint",
+        "mode": "orientation|assessment|cold_start|prereq_review|default",
+        "focus_concept": "string or empty if no change",
+        "retrieval_query": "string or empty to let the system choose",
+        "advance_learning_path": true or false,
+        "use_srl_planning": true or false,
+        "use_multi_step": true or false,
+        "pedagogy_focus": ["optional pedagogy roles like definition, example, concept_check"],
+        "history_window": small integer or null,
+        "history_focus": "mixed|student|tutor|minimal" or empty string,
+        "should_update_mastery": true, false, or null
+      }
+
+  summarize_history: |
+    Summarize the following tutoring session history focusing on what the student has learned, what they struggled with, and the current topic status.
+    Keep it under 80 words and write in a tone that could be shown to the student.
+    History:
+    {{history}}
+    Return ONLY JSON: {"summary": string}
+
+  explain: |
+    You are an adaptive tutor explaining a concept using only the provided grounded context.
+    This is AUTO CONVERSATIONAL mode, so keep the turn light and interactive.
+
+    Requirements:
+    - Use a warm, encouraging tone.
+    - Use simple steps and highlight 1–3 key ideas.
+    - Write 2–5 short sentences.
+    - When possible, connect the explanation to the student's latest message or question.
+    - End with one short invitation or check-in (e.g., a yes/no or 1-sentence prompt), unless the student explicitly asked for a standalone explanation.
+    - If context is insufficient, respond with: "Let's review that from your materials first."
+
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student message: {{student_message}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  orient: |
+    You are an adaptive tutor helping a student decide what to study today and how to start.
+    Use ONLY the provided course information (targets, learning path, and snippets).
+    Do not invent new topics that are not present in the course.
+
+    Goals for conversational auto-mode:
+    - Greet the student briefly and acknowledge their message.
+    - Give a very short overview of the main topics available in this course.
+    - Propose a small, concrete study plan for this session (2–3 concepts or sections).
+    - Recommend ONE specific starting concept.
+    - End with a clear question asking the student to confirm or tweak the plan.
+
+    Student message: {{student_message}}
+    Current focus concept (may be empty): {{focus_concept}}
+    Target concepts for this session: {{target_concepts}}
+    Learning path (ordered concepts): {{learning_path}}
+
+    Mastery snapshot (if any):
+    {{mastery_snapshot}}
+
+    Overview snippets from the materials (may be empty):
+    {{overview_snippets}}
+
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "recommended_concept": string,
+        "confidence": number between 0 and 1
+      }
+
+  ask: |
+    You are generating a short formative question grounded in the provided context.
+
+    Conversational requirements:
+    - Ask ONE question appropriate for the student's current level.
+    - Prefer short-answer or multiple-choice with 3 options.
+    - Phrase the question so the student can answer in 1–3 sentences.
+    - Build on the student's previous wording or idea when possible.
+    - Do NOT just summarize or quote the text; synthesize a question.
+    - If context is insufficient, respond with: "Let's review that from your materials first."
+
+    Return ONLY JSON with keys:
+      {
+        "question": string,
+        "answer": string,
+        "confidence": number between 0 and 1,
+        "options": [string, string, string] OR []
+      }
+    Concept focus: {{concept}}
+    Student message: {{student_message}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  hint: |
+    Provide a gentle hint grounded in the provided context without giving the full answer.
+
+    Conversational requirements:
+    - Speak directly to the student and encourage them to think about the next step.
+    - Mention the specific part of the context that unlocks progress.
+    - Keep it to 1–3 short sentences.
+    - Optionally end with a tiny nudge question (e.g., "What do you think happens to X when Y increases?").
+    - If context insufficient, respond with: "Let's review that from your materials first."
+
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student message: {{student_message}}
+    Student level: {{level}}
+    Context snippets:
+    {{context}}
+
+  reflect: |
+    You are an adaptive tutor continuing a conversation with a student.
+    The student has just shared their thoughts in the latest message below.
+
+    Conversational requirements:
+    - First, briefly acknowledge or paraphrase the student's idea in 1–2 short sentences.
+    - If their idea is mostly or fully correct, reinforce the key parts and extend slightly.
+    - If their idea is partially wrong or shows confusion, gently correct the misconception and give a small hint.
+    - Then ask ONE reflection question to deepen understanding or connect to prior knowledge.
+    - Keep the whole response compact (3–6 short sentences).
+    - Do NOT say that the student hasn't answered yet.
+    - If context insufficient, respond with: "Let's review that from your materials first."
+
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student message: {{student_message}}
+    Student level: {{level}}
+    Recent history:
+    {{recent_history}}
+    Context snippets:
+    {{context}}
+
+  generate_example: |
+    You are an expert tutor creating examples to illustrate concepts for a specific student.
+    Requirements:
+    - Use a {{difficulty}}-level explanation.
+    - Prefer {{context_type}} contexts that match the student's background ({{student_background}}).
+    - Keep the example short and concrete enough to discuss in a quick back-and-forth.
+    - If course examples are provided, draw inspiration without copying.
+    - Avoid repeating these patterns: {{avoid_patterns}}
+    Return ONLY JSON with keys:
+      {
+        "example": string,
+        "explanation": string,
+        "relevance": number between 0 and 1,
+        "confidence": number between 0 and 1
+      }
+    Concept: {{concept}}
+    Student already understands: {{prerequisites}}
+    Course material examples:
+    {{course_examples}}
+
+  turn_signals: |
+    You are classifying turn-level student signals in an AUTO-MODE tutoring conversation.
+
+    Inputs:
+    - Current student message: {{student_message}}
+    - Classifier intent: {{intent}}
+    - Affect: {{affect}}
+    - Focus concept: {{focus_concept}}
+    - Current tutor state: {{current_state}}
+    - Last tutor action: {{last_action}}
+
+    Recent dialogue (newest first, as JSON-like records):
+    {{recent_turns}}
+
+    Your task is to infer:
+    - Whether the student has clearly confirmed understanding of the current explanation or plan.
+    - Whether they are asking for orientation or a study plan.
+    - Whether they are signaling that they are done / want to end the session.
+    - Whether they have provided a substantive reflection about their understanding.
+    - A coarse meta-intent label for conversational control.
+
+    Return ONLY minified JSON with keys:
+      {
+        "student_confirmation": one of ["confirmed","uncertain","not_confirmed"],
+        "wants_orientation": boolean,
+        "wants_study_plan": boolean,
+        "wants_closure": boolean,
+        "reflection_provided": boolean,
+        "meta_intent": string ("ask_question" | "answer" | "meta_talk" | "off_topic" | "" when unclear)
+      }
+
+  phase_classifier: |
+    You are classifying the high-level learning phase of the current tutor turn in AUTO-MODE.
+
+    Inputs:
+    - Student message: {{student_message}}
+    - Classifier intent: {{intent}}
+    - Affect: {{affect}}
+    - Focus concept: {{focus_concept}}
+    - Current tutor state: {{current_state}}
+    - Turn signals:
+      - student_confirmation: {{student_confirmation}}
+      - wants_closure: {{wants_closure}}
+      - wants_orientation: {{wants_orientation}}
+      - wants_study_plan: {{wants_study_plan}}
+
+    Decide which learning phase best fits this moment:
+    - "orientation": greeting, deciding what to study, setting expectations.
+    - "teaching": explaining or elaborating on a concept.
+    - "assessment": checking understanding with questions or quick checks.
+    - "review": revisiting weak areas or prerequisites.
+    - "closure": wrapping up, summarizing, or planning next steps.
+
+    Return ONLY minified JSON with keys:
+      {
+        "suggested_state": one of ["orientation","teaching","assessment","review","closure"],
+        "confidence": number between 0 and 1,
+        "reason": short string explanation
+      }
+
+  action_classifier: |
+    You are deciding the tutor's next pedagogic action for this AUTO-MODE conversational turn.
+
+    Inputs:
+    - Student message: {{student_message}}
+    - Classifier intent: {{intent}}
+    - Affect: {{affect}}
+    - Focus concept: {{focus_concept}}
+    - Current tutor state: {{current_state}}
+    - Suggested phase for this turn: {{suggested_phase}}
+    - Student confirmation classification: {{student_confirmation}}
+    - Meta-intent (if any): {{meta_intent}}
+
+    Choose ONE next_action and related fields so that the conversation flows naturally:
+    - next_action: one of ["explain","ask","reflect","hint","review","orient","preview"].
+    - pedagogy_focus: short list describing emphasis, e.g. ["definition","example","concept_check","feedback","summary"].
+    - should_use_planning: true when multi-step SRL-style planning would be useful (complex teaching, assessments).
+    - should_use_multi_step: true only when several plan steps should be executed in one go.
+    - desired_state_after: optional hint for the next tutor state, one of ["orientation","teaching","assessment","review","closure"] or empty.
+
+    Return ONLY minified JSON with keys:
+      {
+        "current_action_interpretation": string or null,
+        "next_action": "explain|ask|reflect|hint|review|orient|preview",
+        "pedagogy_focus": ["optional focus tags like definition, example, concept_check"],
+        "should_use_planning": boolean,
+        "should_use_multi_step": boolean,
+        "desired_state_after": "orientation|teaching|assessment|review|closure" or null
+      }
+
+  retrieval_strategy: |
+    You are deciding how the tutor should retrieve or reuse content for this AUTO-MODE turn.
+
+    Inputs:
+    - Student message: {{student_message}}
+    - Classifier intent: {{intent}}
+    - Focus concept: {{focus_concept}}
+    - Current tutor state: {{current_state}}
+    - Suggested phase: {{suggested_phase}}
+    - Planned next action: {{next_action}}
+    - Student confirmation classification: {{student_confirmation}}
+    - has_previous_chunks: {{has_previous_chunks}}
+
+    Recent retrieved chunk summaries (if any):
+    {{recent_chunk_summaries}}
+
+    Decide:
+    - strategy: one of ["reuse_last_chunks","fresh_retrieval","refine_query","no_retrieval"].
+      - "reuse_last_chunks": re-use the last retrieval if it still matches the concept and query.
+      - "fresh_retrieval": perform a new retrieval.
+      - "refine_query": adjust the retrieval query to be more precise.
+      - "no_retrieval": skip retrieval if the next action can safely operate without it (e.g., pure reflection or meta talk).
+    - retrieval_query: short phrase for retrieval (may repeat the focus concept or refine it).
+    - max_chunks: small integer (e.g., 4–12) controlling how many chunks to return.
+    - prefer_sections: optional list describing preferred pedagogy roles / sections, e.g. ["definition","example","application","concept_check"].
+
+    Return ONLY minified JSON with keys:
+      {
+        "strategy": "reuse_last_chunks|fresh_retrieval|refine_query|no_retrieval",
+        "retrieval_query": string or null,
+        "max_chunks": integer,
+        "prefer_sections": ["optional section/role hints"]
+      }
+
+  srl_planning: |
+    You are an expert tutor's internal reasoning system. Think step-by-step about how to best help this student next, but remember that the final student-facing turn should stay short and conversational.
+    You will first generate a <think>...</think> reasoning trace, then decide on an action.
+    Available actions: {{available_actions}}
+
+    Reasoning framework:
+    1. What does the student need right now? (assess state)
+    2. What teaching method is most appropriate? (select pedagogy)
+    3. What content should I retrieve? (plan retrieval)
+    4. What is a good small next step for the conversation? (micro-planning)
+
+    Student message: "{{student_message}}"
+    Student state:
+    - Intent: {{intent}}
+    - Affect: {{affect}}
+    - Focus concept: {{focus_concept}}
+    - Level: {{student_level}}
+    - Previous action: {{previous_action}}
+
+    Recent Conversation History:
+    {{recent_history}}
+
+    Mastery snapshot:
+    {{mastery_snapshot}}
+
+    Learning path: {{learning_path}}
+
+    <think>
+    [Generate your internal reasoning here. Be explicit about:
+    - What the student seems to understand/not understand
+    - Why you're choosing this action over alternatives
+    - What you plan to retrieve and why
+    - Any assumptions you're making]
+    </think>
+
+    Prefer a short multi-action sequence (2–4 steps), e.g., explain basics → quick concept-check → brief reflection.
+
+    Return ONLY minified JSON with keys:
+    {
+      "thinking": "<your reasoning from think block>",
+      "intended_action": "explain|ask|hint|reflect|review",
+      "action_rationale": "why this action is best",
+      "retrieval_query": "what to search for",
+      "pedagogy_focus": ["definition", "example"],
+      "difficulty_cap": "introductory|intermediate|advanced",
+      "confidence": 0.8,
+      "assumptions": ["student has seen X before"],
+      "risks": ["might be too advanced"],
+      "steps": [
+        {"action": "explain", "rationale": "cover basics", "pedagogy_focus": ["definition","explanation"], "target_concept": "optional"},
+        {"action": "ask", "rationale": "check fluency", "pedagogy_focus": ["concept_check"], "target_concept": "optional"}
+      ],
+      "target_sequence": ["optional ordered concepts/subtopics to progress"]
+    }
+
+  explain_with_plan: |
+    You are an adaptive tutor explaining a concept using only the provided grounded context.
+    Use the provided internal plan to guide structure, pedagogy, and difficulty.
+
+    Requirements:
+    - Keep tone warm and encouraging.
+    - Use simple steps and highlight 1–3 key ideas.
+    - Align with the plan's rationale and pedagogy focus: {{pedagogy_focus}}
+    - Keep the response 2–5 sentences and end with a light invitation when appropriate.
+    - If context insufficient, respond with: "Let's review that from your materials first."
+
+    Return ONLY JSON with keys:
+      {
+        "response": string,
+        "confidence": number between 0 and 1
+      }
+    Concept focus: {{concept}}
+    Student level: {{level}}
+    Internal plan thinking:
+    {{plan_thinking}}
+    Plan rationale:
+    {{plan_rationale}}
+    Context snippets:
+    {{context}}
+
+  self_critique: |
+    You are a self-critic reviewing a tutor response before sending to a student.
+    Evaluate the response against the internal plan and student state.
+    Checks:
+    - Does response match intended action ({{intended_action}})?
+    - Is difficulty appropriate for {{student_level}}?
+    - Is the response concise and conversational (not a long lecture)?
+    - Are assumptions addressed and risks mitigated?
+    Return ONLY minified JSON with keys:
+      {
+        "quality": number 0..1,
+        "issues": [string],
+        "suggestions": [string],
+        "should_revise": boolean,
+        "reasoning": string
+      }
+    Internal plan thinking:
+    {{plan_thinking}}
+    Plan rationale:
+    {{plan_rationale}}
+    Generated response:
+    {{generated_response}}
+
+  bridge_example: |
+    You are an expert tutor creating a bridge example from a known concept to a new concept.
+    Requirements:
+    - Connect what the student knows ({{from_concept}}) to the new idea ({{to_concept}}).
+    - Keep at a {{student_level}} level.
+    - Make the example short enough to discuss in a brief back-and-forth.
+    - If course examples are provided, reference them without copying.
+    Return ONLY JSON with keys:
+      {
+        "example": string,
+        "explanation": string,
+        "relevance": number between 0 and 1,
+        "confidence": number between 0 and 1
+      }
+    Course material examples:
+    {{course_examples}}
+
+# Tutor RL prompts can stay compatible with baseline for now
+
+tutor_rl:
+  critic_score: |
+    You are an independent pedagogy critic reviewing a tutor response.
+    Evaluate clarity, factual accuracy, quality of grounding, and hallucination risk.
+    Use the observation summary and retrieved snippets for reference.
+    Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:
+      {
+        "clarity": number 0..1,
+        "accuracy": number 0..1,
+        "support": number 0..1,
+        "hallucination_flag": boolean,
+        "notes": string (≤280 chars),
+        "confidence": number 0..1
+      }
+    Observation:
+      Student message: {{student_message}}
+      Focus concept: {{focus_concept}}
+      Action type: {{action_type}}
+      Classifier intent: {{intent}}
+      Retrieved snippets:
+    {{retrieved_context}}
+    Tutor response:
+    {{response}}
+    BEGIN_STRICT_JSON
+    {
+      "clarity": 0.8,
+      "accuracy": 0.8,
+      "support": 0.8,
+      "hallucination_flag": false,
+      "notes": "",
+      "confidence": 0.75
+    }
+    END_STRICT_JSON
+  critic_preference: |
+    You are comparing multiple tutor responses to the same observation. Choose the best candidate.
+    Consider clarity, accuracy, grounding, pedagogical value, and safety.
+    Output BEGIN_STRICT_JSON ... END_STRICT_JSON with keys:
+      {
+        "chosen": integer index of the preferred candidate (0-based),
+        "scores": array[number] matching the number of candidates (each 0..1),
+        "confidence": number 0..1,
+        "reason": string (≤200 chars)
+      }
+    Observation summary:
+      Student message: {{student_message}}
+      Focus concept: {{focus_concept}}
+      Action type(s): {{action_types}}
+      Classifier intent: {{intent}}
+    Candidates:
+    {{candidate_summaries}}
+    Respond with strict JSON only.
+    BEGIN_STRICT_JSON
+    {
+      "chosen": 0,
+      "scores": [0.7],
+      "confidence": 0.6,
+      "reason": ""
+    }
+    END_STRICT_JSON

@@ -42,6 +42,7 @@ def execute_plan_steps(
     step_progress: List[Dict[str, Any]] = []
     last_action = "explain"
     inference_concept = focus_concept
+    explain_added = False
 
     for idx, step in enumerate(steps[:4]):
         action = str(step.get("action") or "explain").lower()
@@ -66,7 +67,14 @@ def execute_plan_steps(
         if inferred and not inference_concept:
             inference_concept = inferred
 
-        if text:
+        include_text = True
+        if action == "explain":
+            if explain_added:
+                include_text = False
+            else:
+                explain_added = True
+
+        if text and include_text:
             combined_text_parts.append(str(text).strip())
         try:
             combined_confidences.append(float(conf))

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 import textwrap
 import os
+import re
+import uuid
 
 from prompts import get as prompt_get, render as prompt_render
 from llm import call_json_chat
@@ -13,13 +15,46 @@ from .tools.example_generator import ExampleGenerator, ExampleRequest
 from .planning import TutorPlan
 
 
+def clean_snippet_for_display(snippet: str, max_length: int = 400) -> str:
+    """Clean OCR artifacts and format snippet for student display.
+    
+    Removes common OCR artifacts like (cid:4), normalizes whitespace,
+    and truncates if too long.
+    """
+    if not snippet:
+        return ""
+    
+    # Remove common OCR artifacts
+    cleaned = snippet.replace("(cid:4)", "§")  # Section symbol
+    cleaned = re.sub(r'\(cid:\d+\)', '', cleaned)  # Remove all (cid:N) patterns
+    cleaned = re.sub(r'\s+', ' ', cleaned)  # Normalize whitespace
+    cleaned = cleaned.strip()
+    
+    # Truncate if too long
+    if len(cleaned) > max_length:
+        # Try to break at sentence or word boundary
+        truncated = cleaned[:max_length]
+        last_period = truncated.rfind('.')
+        last_space = truncated.rfind(' ')
+        
+        if last_period > max_length * 0.7:  # Period found in last 30%
+            cleaned = cleaned[:last_period + 1] + "..."
+        elif last_space > max_length * 0.7:  # Space found in last 30%
+            cleaned = cleaned[:last_space] + "..."
+        else:
+            cleaned = truncated + "..."
+    
+    return cleaned
+
+
 def _fallback_response_text(concept: Optional[str], chunks: List[Dict[str, str]]) -> str:
     if chunks:
         top = (chunks[0].get("snippet") or "").strip()
         if top:
+            cleaned_snippet = clean_snippet_for_display(top)
             return (
                 "Here's what your materials say about this topic:\n\n"
-                f"{top}\n\n"
+                f"{cleaned_snippet}\n\n"
                 "Let me know if you'd like a different angle."
             )
     return (
@@ -28,9 +63,67 @@ def _fallback_response_text(concept: Optional[str], chunks: List[Dict[str, str]]
     )
 
 
+def _format_mastery_snapshot(mastery_map: Dict[str, Dict[str, object]], limit: int = 5) -> str:
+    if not mastery_map:
+        return "No mastery data yet."
+    lines: List[str] = []
+    for concept, data in list(mastery_map.items())[:limit]:
+        try:
+            mastery = float((data or {}).get("mastery", 0.0) or 0.0)  # type: ignore[arg-type]
+        except Exception:
+            mastery = 0.0
+        lines.append(f"- {concept}: {mastery:.2f}")
+    return "\n".join(lines)
+
+
+def build_orientation_response(
+    message: str,
+    focus_concept: Optional[str],
+    learning_targets: List[str],
+    learning_path: List[str],
+    mastery_map: Dict[str, Dict[str, object]],
+    chunks: List[Dict[str, str]],
+) -> Tuple[str, float, List[str], Optional[str]]:
+    orientation_prompt = prompt_render(
+        prompt_get("tutor.orient"),
+        {
+            "student_message": message,
+            "focus_concept": focus_concept or "",
+            "target_concepts": format_concept_list(learning_targets),
+            "learning_path": ", ".join(learning_path or []),
+            "mastery_snapshot": _format_mastery_snapshot(mastery_map),
+            "overview_snippets": format_context_snippets(chunks),
+        },
+    )
+
+    default_recommended = focus_concept or (learning_path[0] if learning_path else (learning_targets[0] if learning_targets else ""))
+    default_payload = {
+        "response": (
+            "Let's plan our study session. "
+            "Based on your course materials, we can work through a short sequence of key topics. "
+            "I'll suggest a starting point and a couple of next steps, then you can choose where to begin."
+        ),
+        "recommended_concept": default_recommended,
+        "confidence": 0.7,
+    }
+
+    try:
+        result = call_json_chat(orientation_prompt, default=default_payload)
+    except Exception:
+        logger.exception("tutor_orientation_prompt_failed")
+        result = default_payload
+
+    response_text = str(result.get("response") or default_payload["response"]).strip()
+    confidence = clamp_confidence(result.get("confidence") or default_payload["confidence"])
+    recommended_concept = str(result.get("recommended_concept") or default_recommended).strip() or None
+    source_ids = [c.get("id") for c in chunks if c.get("id")]
+    return response_text, confidence, source_ids, recommended_concept
+
+
 def build_cold_start_question(
     concept: Optional[str],
     chunks: List[Dict[str, str]],
+    message: Optional[str] = None,
 ) -> Tuple[str, float, List[str]]:
     default_question = f"What is a key idea about {concept}?" if concept else "What is a key idea here?"
     cold_prompt = prompt_render(
@@ -39,6 +132,7 @@ def build_cold_start_question(
             "concept": concept or "the concept",
             "level": "beginner",
             "context": "",
+            "student_message": message or "",
         },
     )
     ask_default = {
@@ -62,6 +156,7 @@ def build_hint_response(
     concept: Optional[str],
     level: str,
     chunks: List[Dict[str, str]],
+    message: Optional[str] = None,
 ) -> Tuple[str, float, List[str]]:
     hint_prompt = prompt_render(
         prompt_get("tutor.hint"),
@@ -69,6 +164,7 @@ def build_hint_response(
             "concept": concept or "the concept",
             "level": level,
             "context": format_context_snippets(chunks),
+            "student_message": message or "",
         },
     )
     hint_default = {
@@ -130,6 +226,8 @@ def build_reflect_response(
     concept: Optional[str],
     level: str,
     chunks: List[Dict[str, str]],
+    message: Optional[str] = None,
+    history: Optional[str] = None,
 ) -> Tuple[str, float, List[str]]:
     reflect_prompt = prompt_render(
         prompt_get("tutor.reflect"),
@@ -137,6 +235,8 @@ def build_reflect_response(
             "concept": concept or "the concept",
             "level": level,
             "context": format_context_snippets(chunks),
+            "student_message": message or "",
+            "recent_history": history or "",
         },
     )
     reflect_default = {
@@ -158,32 +258,165 @@ def build_followup_question(
     concept: Optional[str],
     level: str,
     chunks: List[Dict[str, str]],
+    message: Optional[str] = None,
 ) -> Tuple[str, float, List[str]]:
-    """Build a follow-up assessment question to check understanding after explaining."""
-    default_question = f"Can you explain {concept} in your own words?" if concept else "Can you summarize what you learned?"
-    followup_prompt = prompt_render(
-        prompt_get("tutor.ask"),
-        {
-            "concept": concept or "the concept",
-            "level": level,
-            "context": format_context_snippets(chunks) or "",
-        },
+    """Build a simple, open follow-up question to check understanding.
+
+    For assessment turns we want the student to produce their own explanation,
+    not answer a multiple-choice question. To keep behaviour predictable (and
+    avoid MCQ-style prompts), this helper favours an open, free-form question
+    with a grounded snippet and uses the LLM only to phrase the check
+    question, falling back to a deterministic variant if needed.
+    """
+
+    # Prefer a grounded question that invites the student to explain in their own words.
+    if concept:
+        default_question = f"Can you explain {concept} in your own words?"
+    else:
+        default_question = "Can you summarize what you understand so far?"
+
+    # Optionally anchor the question with the first retrieved snippet.
+    snippet = ""
+    if chunks:
+        try:
+            snippet = (chunks[0].get("snippet") or "").strip()
+        except Exception:
+            snippet = ""
+
+    # Ask the LLM to phrase an open-ended check question while avoiding MCQs.
+    prompt_parts = [
+        "You are a helpful tutor.",
+        f"Concept: {concept or 'this concept'}.",
+        f"Level: {level}.",
+    ]
+    if snippet:
+        prompt_parts.append("Here is a snippet from the student's notes:")
+        prompt_parts.append(snippet)
+    if message:
+        prompt_parts.append("Student message:")
+        prompt_parts.append(message)
+    prompt_parts.append(
+        "Return JSON with fields 'question' and 'confidence'. Ask ONE open-ended "
+        "question that gets the student to explain in their own words. Do NOT "
+        "use multiple choice or options."
     )
+    prompt = "\n\n".join(prompt_parts)
+
     ask_default = {
         "question": default_question,
-        "answer": "",
         "confidence": 0.7,
-        "options": [],
     }
     try:
-        ask_result = call_json_chat(followup_prompt, default=ask_default)
+        ask_result = call_json_chat(prompt, default=ask_default)
     except Exception:
-        logger.exception("tutor_followup_question_failed")
+        logger.exception("tutor_followup_question_prompt_failed")
         ask_result = ask_default
-    response_text = str(ask_result.get("question") or default_question).strip()
+
+    question_text = str(ask_result.get("question") or default_question).strip()
+    if snippet:
+        cleaned_snippet = clean_snippet_for_display(snippet)
+        response_text = (
+            f"Based on this part of your notes:\n\n{cleaned_snippet}\n\n"
+            f"{question_text}"
+        )
+    else:
+        response_text = question_text or default_question
+
     confidence = clamp_confidence(ask_result.get("confidence") or 0.7)
     source_ids = [cid for cid in [c.get("id") for c in chunks] if cid]
     return response_text, confidence, source_ids
+
+
+def build_mcq_assessment_question(
+    concept: Optional[str],
+    level: str,
+    chunks: List[Dict[str, str]],
+    message: Optional[str] = None,
+) -> Tuple[str, float, List[str], Dict[str, object]]:
+    """Build a simple MCQ-style assessment question with an Explain/Teach option.
+
+    This helper is intentionally deterministic and lightweight; it does not
+    depend on LLM calls. The question text mirrors the MCQ structure so that
+    existing clients that only render `response` still see a sensible
+    question, while richer clients can use the structured `mcq` block.
+    """
+
+    concept_label = concept or "this concept"
+    question_id = str(uuid.uuid4())
+
+    level_norm = (level or "").strip().lower()
+    if level_norm in {"beginner", "intro"}:
+        difficulty = "easy"
+    elif level_norm in {"intermediate", "proficient"}:
+        difficulty = "medium"
+    else:
+        difficulty = "hard"
+
+    question = f"Which of the following statements best describes {concept_label}?"
+
+    option_a = f"It is a key idea related to {concept_label} discussed in your materials."
+    option_b = f"It is unrelated to {concept_label} or your current course content."
+    option_c = f"It is only about memorizing formulas, not understanding {concept_label}."
+    option_explain = "I'm not sure, please explain/teach this."
+
+    options: List[Dict[str, object]] = [
+        {
+            "id": "a",
+            "label": option_a,
+            "short_label": "A",
+            "is_explain_option": False,
+            "difficulty": difficulty,
+            "tag": "correct",
+        },
+        {
+            "id": "b",
+            "label": option_b,
+            "short_label": "B",
+            "is_explain_option": False,
+            "difficulty": difficulty,
+            "tag": "distractor_course",
+        },
+        {
+            "id": "c",
+            "label": option_c,
+            "short_label": "C",
+            "is_explain_option": False,
+            "difficulty": difficulty,
+            "tag": "distractor_memorization",
+        },
+        {
+            "id": "explain",
+            "label": option_explain,
+            "short_label": "Explain",
+            "is_explain_option": True,
+            "difficulty": difficulty,
+            "tag": "explain_request",
+        },
+    ]
+
+    lines: List[str] = [question, ""]
+    for opt in options[:3]:
+        lines.append(f"{opt['short_label']}. {opt['label']}")
+    lines.append("")
+    lines.append(f"D. {option_explain}")
+    response_text = "\n".join(lines)
+
+    confidence = 0.7
+    source_ids = [cid for cid in [c.get("id") for c in chunks] if cid]
+
+    mcq: Dict[str, object] = {
+        "question_id": question_id,
+        "question": question,
+        "options": options,
+        "correct_option_id": "a",
+        "explain_option_id": "explain",
+        "concept": concept,
+        "level": level,
+        "difficulty": difficulty,
+        "context_chunk_ids": source_ids,
+    }
+
+    return response_text, confidence, source_ids, mcq
 
 
 def build_override_question(
@@ -217,6 +450,7 @@ def generate_explain_response(
     level: str,
     chunks: List[Dict[str, str]],
     fallback_response: Optional[str] = None,
+    message: Optional[str] = None,
 ) -> Tuple[str, float, List[str], Optional[str]]:
     if not chunks:
         response = (
@@ -236,10 +470,16 @@ def generate_explain_response(
             "concept": concept or "the concept",
             "level": level,
             "context": context_block,
+            "student_message": message or "",
         },
     )
     try:
-        result = call_json_chat(prompt, default=default_payload)
+        result = call_json_chat(
+            prompt,
+            default=default_payload,
+            allow_text_fallback=True,
+            text_field="response",
+        )
     except Exception:
         logger.exception("tutor_explain_prompt_failed")
         result = default_payload
@@ -258,6 +498,7 @@ def generate_explain_response_with_plan(
     level: str,
     chunks: List[Dict[str, str]],
     fallback_response: Optional[str] = None,
+    message: Optional[str] = None,
 ) -> Tuple[str, float, List[str], Optional[str]]:
     """Generate an explanation guided by an internal plan.
 
@@ -284,10 +525,16 @@ def generate_explain_response_with_plan(
             "plan_thinking": plan.thinking,
             "plan_rationale": plan.action_rationale,
             "pedagogy_focus": ", ".join(plan.pedagogy_focus or []),
+            "student_message": message or "",
         },
     )
     try:
-        result = call_json_chat(prompt, default=default_payload)
+        result = call_json_chat(
+            prompt,
+            default=default_payload,
+            allow_text_fallback=True,
+            text_field="response",
+        )
     except Exception:
         logger.exception("tutor_explain_with_plan_prompt_failed")
         result = default_payload

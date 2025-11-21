@@ -1,8 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
+import { useAuth } from '../../hooks/useAuth'
+import { API_BASE } from '../../lib/api'
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -16,6 +16,7 @@ function parseConcepts(input) {
 }
 
 export default function TutorTestingDashboard() {
+  const { token } = useAuth({ requireAuth: true })
   const [userId, setUserId] = useState('')
   const [sessionId, setSessionId] = useState('')
   const [resourceId, setResourceId] = useState('')
@@ -47,6 +48,10 @@ export default function TutorTestingDashboard() {
       endRef.current.scrollIntoView({ behavior: 'smooth' })
     }
   }, [turns])
+
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
 
   function persistLocal(key, value) {
     try {
@@ -96,7 +101,7 @@ export default function TutorTestingDashboard() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: 'Bearer test-token',
+          Authorization: authHeader(),
         },
         body: JSON.stringify(payload),
       })

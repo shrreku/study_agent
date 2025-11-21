@@ -39,3 +39,6 @@ rlenv.md
 sihppt.pptx
 tutorAgentContext.md
 SRL_GUIDE.md.env.bak
+*.md
+.env.bak
+*.txt

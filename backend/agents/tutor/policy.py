@@ -103,6 +103,42 @@ def select_focus_concept_with_prereqs(
         except Exception:
             weak_th = 0.4
 
+        # CHECK 1: Is the primary concept ALREADY mastered?
+        # If so, and the user is just saying "continue" (not asking a specific question),
+        # we should probably move to the NEXT concept.
+        # We infer "just saying continue" if the intent is not a specific question/confusion.
+        # For now, we'll be conservative: if mastery > 0.85, we consider looking ahead.
+        primary_info = mastery_map.get(primary)
+        primary_mastery = (primary_info or {}).get("mastery", 0.0)
+        
+        # If primary is mastered, we might want to skip it
+        if primary_mastery > 0.85:
+             # Find its index
+             try:
+                 idx = learning_path.index(primary)
+                 # Look for next unmastered
+                 found_next = None
+                 for candidate in learning_path[idx+1:]:
+                     c_info = mastery_map.get(candidate)
+                     c_mastery = (c_info or {}).get("mastery", 0.0)
+                     if c_mastery < 0.8:
+                         found_next = candidate
+                         break
+                 
+                 if found_next:
+                     # We found a better target forward in the path
+                     # But we must ensure we don't skip if the user EXPLICITLY asked about the old one.
+                     # This function doesn't see the message text directly, but the caller
+                     # passed 'classification'.
+                     # If classification confidence is high on 'primary', it implies the user
+                     # likely mentioned it. If confidence is low or it was just context carryover,
+                     # we can switch.
+                     # Simplified heuristic: If we found a next concept, let's check ITs prerequisites.
+                     # If it's ready, we suggest it.
+                     primary = found_next
+             except ValueError:
+                 pass
+
         prereq_checker = PrerequisiteChecker(mastery_threshold=mastery_th, weak_threshold=weak_th)
         prereq_result = prereq_checker.check_readiness(
             concept=primary,
@@ -127,3 +163,64 @@ def select_focus_concept_with_prereqs(
             return concept, prereq_result
 
     return primary or (learning_path[0] if learning_path else None), prereq_result
+
+
+def build_session_plan(
+    learning_targets: List[str],
+    mastery_map: Dict[str, Dict[str, Any]],
+    learning_path: List[str],
+    strategy: str,
+) -> Dict[str, Any]:
+    """Build a simple session-level concept plan.
+
+    This helper is used in step-by-step mode to derive an ordered list of
+    concepts for the current session from the target concepts, mastery
+    map, and prerequisite chain.
+
+    Strategies:
+        - "learning_path" (default): follow the prerequisite chain order.
+        - "weakest_first": sort by ascending mastery.
+        - "custom": preserve the target_concepts order.
+    """
+
+    normalized_strategy = (strategy or "learning_path").strip().lower()
+    if normalized_strategy not in {"learning_path", "weakest_first", "custom"}:
+        normalized_strategy = "learning_path"
+
+    # Deduplicate while preserving order.
+    def _dedupe(seq: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for item in seq:
+            if not item:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        return out
+
+    if normalized_strategy == "learning_path":
+        base = [c for c in learning_path if isinstance(c, str) and c]
+        concept_plan = _dedupe(base)
+    elif normalized_strategy == "weakest_first":
+        candidates = [c for c in learning_targets if isinstance(c, str) and c]
+        if not candidates:
+            candidates = [c for c in mastery_map.keys() if isinstance(c, str) and c]
+
+        def _mastery_score(cid: str) -> float:
+            info = mastery_map.get(cid) or {}
+            try:
+                return float(info.get("mastery") or 0.0)
+            except Exception:
+                return 0.0
+
+        concept_plan = sorted(_dedupe(candidates), key=_mastery_score)
+    else:  # "custom": preserve provided targets
+        base = [c for c in learning_targets if isinstance(c, str) and c]
+        concept_plan = _dedupe(base)
+
+    return {
+        "strategy": normalized_strategy,
+        "concept_plan": concept_plan,
+    }

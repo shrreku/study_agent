@@ -78,10 +78,11 @@ def _repair_json(json_str: str) -> str:
     
     # Fix missing commas between objects/values (common LLM error)
     # This is risky, so we're conservative
-    json_str = re.sub(r'"\s*\n\s*"', '",\n"', json_str)
+    json_str = re.sub(r"\"\s*\n\s*\"", '",\n"', json_str)
     json_str = re.sub(r'}\s*\n\s*{', '},\n{', json_str)
     json_str = re.sub(r']\s*\n\s*\[', '],\n[', json_str)
-    
+    json_str = re.sub(r'[\x00-\x1F]+', ' ', json_str)
+
     return json_str
 
 
@@ -136,6 +137,33 @@ def _get_model_override() -> Optional[str]:
     return getattr(_thread_local, 'model_override', None)
 
 
+def model_supports_json_mode(model: Optional[str]) -> bool:
+    """Return True if provider implements OpenAI response_format JSON mode."""
+    if not model:
+        return True
+    lowered = model.lower()
+    # Anthropic Claude (via AIML API) currently rejects response_format payloads
+    unsupported_tokens = ("anthropic/", "claude")
+    return not any(token in lowered for token in unsupported_tokens)
+
+
+def get_effective_model_name(model_hint: Optional[str] = None) -> str:
+    """Return the effective model name for the current thread.
+
+    Priority:
+    1) Explicit model_hint passed by the caller.
+    2) Thread-local override set via model_override_context.
+    3) Environment defaults (LLM_MODEL_MINI or LLM_MODEL_NANO).
+    4) Fallback hardcoded default.
+    """
+
+    override = _get_model_override()
+    model = model_hint or override or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
+    if not model:
+        model = "gpt-4o-mini"
+    return model
+
+
 def _timeout_seconds() -> int:
     try:
         return int(os.getenv("LLM_TIMEOUT_SECS", "60"))
@@ -178,6 +206,8 @@ def call_json_chat(
     if not user_content:
         user_content = "Provide a valid JSON response for the requested StudyAgent prompt."
 
+    json_mode_enabled = _should_use_json_mode() and model_supports_json_mode(model)
+
     body: Dict[str, Any] = {
         "model": model,
         "messages": [
@@ -188,7 +218,7 @@ def call_json_chat(
         "max_tokens": max_tokens or int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "2000")),
         "stream": False,
     }
-    if _should_use_json_mode():
+    if json_mode_enabled:
         body["response_format"] = {"type": "json_object"}
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -197,7 +227,7 @@ def call_json_chat(
         "json_chat_request model=%s url=%s json_mode=%s max_tokens=%s",
         model,
         url,
-        _should_use_json_mode(),
+        json_mode_enabled,
         body.get("max_tokens"),
     )
 
@@ -239,6 +269,10 @@ def call_json_chat(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"{user_prompt}\n{retry_suffix}"},
         ]
+        if json_mode_enabled:
+            retry_body["response_format"] = {"type": "json_object"}
+        else:
+            retry_body.pop("response_format", None)
         data = _send(retry_body)
         content = (
             data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -250,13 +284,20 @@ def call_json_chat(
         logging.error("json_chat_empty_after_retry; returning default")
         return default
 
+    blob = ""
+    parsed = None
     try:
         blob = _extract_json_blob(content)
         parsed = json.loads((blob or "").strip())
-        if isinstance(parsed, dict):
-            return parsed
     except Exception:
-        logging.exception("json_chat_parse_failed")
+        try:
+            repaired = _repair_json(blob or "")
+            parsed = json.loads(repaired.strip())
+        except Exception:
+            logging.exception("json_chat_parse_failed")
+            parsed = None
+    if isinstance(parsed, dict):
+        return parsed
 
     # If provider ignored JSON mode but returned text, optionally wrap it
     if allow_text_fallback and content.strip() and text_field:

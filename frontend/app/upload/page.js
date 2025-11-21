@@ -1,8 +1,12 @@
 "use client"
 import { useState, useEffect } from 'react'
 import Script from 'next/script'
+import { useAuth } from '../hooks/useAuth'
+import { API_BASE } from '../lib/api'
+import { upsertNoteMetadata, updateNoteStatusFromJob } from '../lib/notes'
 
 export default function UploadPage() {
+  const { token } = useAuth({ requireAuth: true })
   const [file, setFile] = useState(null)
   const [progress, setProgress] = useState(0)
   const [resourceId, setResourceId] = useState(null)
@@ -32,12 +36,13 @@ export default function UploadPage() {
     if (!jobId) return
     setError(null)
     try {
-      const res = await fetch(`http://localhost:8000/api/jobs/${jobId}`, {
-        headers: { 'Authorization': 'Bearer test-token' },
+      const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
+        headers: { 'Authorization': authHeader() },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const j = await res.json()
       setJobStatus(j)
+      updateNoteStatusFromJob(j, { resourceId, jobId })
     } catch (e) {
       setError(String(e))
     }
@@ -47,9 +52,9 @@ export default function UploadPage() {
     setAdminResult(null)
     setError(null)
     try {
-      const res = await fetch('http://localhost:8000/api/admin/recompute-search-tsv', {
+      const res = await fetch(`${API_BASE}/api/admin/recompute-search-tsv`, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer test-token' },
+        headers: { 'Authorization': authHeader() },
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const j = await res.json()
@@ -72,9 +77,9 @@ export default function UploadPage() {
         resource_boost: Number(benchResourceBoost),
         page_proximity_boost: Boolean(benchPageProx),
       }
-      const res = await fetch('http://localhost:8000/api/bench/pk', {
+      const res = await fetch(`${API_BASE}/api/bench/pk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -131,6 +136,10 @@ export default function UploadPage() {
   const [benchResult, setBenchResult] = useState(null)
   const [reindexResult, setReindexResult] = useState(null)
 
+  function authHeader() {
+    return token ? `Bearer ${token}` : 'Bearer test-token'
+  }
+
   useEffect(() => {
     if (mathEngine === 'katex') {
       const id = 'katex-css'
@@ -162,9 +171,9 @@ export default function UploadPage() {
 
     try {
       const xhr = new window.XMLHttpRequest()
-      xhr.open('POST', 'http://localhost:8000/api/resources/upload')
-      // MVP backend requires a Bearer token presence; static token is sufficient
-      xhr.setRequestHeader('Authorization', 'Bearer test-token')
+      xhr.open('POST', `${API_BASE}/api/resources/upload`)
+      // Auth: prefer JWT token, fall back to dev token if absent
+      xhr.setRequestHeader('Authorization', authHeader())
 
       xhr.upload.onprogress = (ev) => {
         if (ev.lengthComputable) {
@@ -177,8 +186,20 @@ export default function UploadPage() {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const json = JSON.parse(xhr.responseText)
-              setResourceId(json.resource_id || json.id || null)
-              setJobId(json.job_id || null)
+              const nextResourceId = json.resource_id || json.id || null
+              const nextJobId = json.job_id || null
+              setResourceId(nextResourceId)
+              setJobId(nextJobId)
+              if (nextResourceId && typeof window !== 'undefined') {
+                upsertNoteMetadata({
+                  id: nextResourceId,
+                  name: file ? file.name : '',
+                  size: file ? file.size : 0,
+                  uploaded_at: new Date().toISOString(),
+                  job_id: nextJobId,
+                  status: nextJobId ? 'Queued' : 'Uploaded',
+                })
+              }
             } catch (e) {
               setError('Upload succeeded but response parse failed')
             }
@@ -199,9 +220,9 @@ export default function UploadPage() {
     setError(null)
     setChunkResult(null)
     try {
-      const res = await fetch(`http://localhost:8000/api/resources/${resourceId}/chunk`, {
+      const res = await fetch(`${API_BASE}/api/resources/${resourceId}/chunk`, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer test-token' },
+        headers: { 'Authorization': authHeader() },
       })
       if (!res.ok) {
         throw new Error(`Chunk request failed: ${res.status}`)
@@ -218,8 +239,8 @@ export default function UploadPage() {
     setChunksLoading(true)
     setError(null)
     try {
-      const res = await fetch(`http://localhost:8000/api/resources/${resourceId}/chunks?limit=${limit}&offset=${offset}`, {
-        headers: { 'Authorization': 'Bearer test-token' },
+      const res = await fetch(`${API_BASE}/api/resources/${resourceId}/chunks?limit=${limit}&offset=${offset}`, {
+        headers: { 'Authorization': authHeader() },
       })
       if (!res.ok) throw new Error(`Chunks fetch failed: ${res.status}`)
       const j = await res.json()
@@ -240,9 +261,9 @@ export default function UploadPage() {
     try {
       const payload = { resource_id: resourceId, horizon_weeks: Number(horizonWeeks), daily_minutes: Number(dailyMinutes) }
       if (examDate) payload.exam_date = examDate
-      const res = await fetch('http://localhost:8000/api/agent/study-plan', {
+      const res = await fetch(`${API_BASE}/api/agent/study-plan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -261,9 +282,9 @@ export default function UploadPage() {
     setDailyQuiz(null)
     try {
       const concepts = quizConcepts.split(',').map((s) => s.trim()).filter(Boolean)
-      const res = await fetch('http://localhost:8000/api/agent/daily-quiz', {
+      const res = await fetch(`${API_BASE}/api/agent/daily-quiz`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify({ resource_id: resourceId, count: Number(quizCount), concepts }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -281,9 +302,9 @@ export default function UploadPage() {
     setAgentLoading(true)
     setDoubtAnswer(null)
     try {
-      const res = await fetch('http://localhost:8000/api/agent/doubt', {
+      const res = await fetch(`${API_BASE}/api/agent/doubt`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
         body: JSON.stringify({ question: doubtQuestion, resource_id: resourceId }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -293,6 +314,23 @@ export default function UploadPage() {
       setError(String(e))
     } finally {
       setAgentLoading(false)
+    }
+  }
+
+  async function callReindex() {
+    if (!resourceId) return
+    setReindexResult(null)
+    setError(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/resources/${resourceId}/reindex`, {
+        method: 'POST',
+        headers: { 'Authorization': authHeader() },
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const j = await res.json()
+      setReindexResult(j)
+    } catch (e) {
+      setError(String(e))
     }
   }
 
