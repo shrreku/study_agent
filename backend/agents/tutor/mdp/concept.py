@@ -71,6 +71,8 @@ def _normalize_control_label(label: Optional[str]) -> Optional[str]:
         return None
     if text in {"continue", "next", "yes"}:
         return "continue"
+    if text in {"re-plan", "replan", "replan_concept"}:
+        return "replan_concept"
     if text == "skip_to_quiz":
         return "skip_to_quiz"
     if text in {"skip_to_next_concept", "skip_to_next"}:

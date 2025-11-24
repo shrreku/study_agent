@@ -1,303 +1,226 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, Optional
 from psycopg2.extras import Json
 
+from .context_model import TutorContext
+from .state import TutorSessionPolicy
 
-def ensure_session(
-    cursor,
-    user_id: str,
-    session_id: Optional[str],
-    target_concepts: List[str],
-    resource_id: Optional[str],
-    policy: Optional[Dict[str, Any]],
-) -> str:
-    if session_id:
-        cursor.execute(
+logger = logging.getLogger(__name__)
+
+
+class TutorStateManager:
+    """
+    Manages persistence of the Tutor Agent's state.
+    Adapts the internal MDP state to the existing database schema.
+    """
+
+    def __init__(self, cur: Any):
+        self.cur = cur
+
+    def load_context(self, session_id: str, user_id: str) -> TutorContext:
+        """
+        Load the TutorContext from the database.
+        """
+        logger.info(f"Loading context for session {session_id}")
+
+        # 1. Fetch session data (policy, target_concepts)
+        self.cur.execute(
             """
-            SELECT id::text
+            SELECT policy, target_concepts
             FROM tutor_session
             WHERE id = %s::uuid
             LIMIT 1
             """,
             (session_id,),
         )
-        row = cursor.fetchone()
-        if row and row[0]:
-            return row[0]
-    cursor.execute(
-        """
-        INSERT INTO tutor_session (
-            user_id,
-            resource_id,
-            target_concepts,
-            status,
-            policy,
-            last_concept,
-            last_action
-        )
-        VALUES (
-            %s::uuid,
-            NULLIF(%s, '')::uuid,
-            %s::text[],
-            %s,
-            %s,
-            %s,
-            %s
-        )
-        RETURNING id::text
-        """,
-        (
-            user_id,
-            resource_id,
-            target_concepts or [],
-            "active",
-            Json(policy) if policy is not None else None,
-            None,
-            None,
-        ),
-    )
-    row = cursor.fetchone()
-    return row[0] if row else session_id or ""
+        row = self.cur.fetchone()
 
-
-def get_session_state(cursor, session_id: str) -> Dict[str, Any]:
-    cursor.execute(
-        """
-        SELECT last_concept, last_action, target_concepts, policy
-        FROM tutor_session
-        WHERE id = %s::uuid
-        """,
-        (session_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return {
-            "last_concept": None,
-            "last_action": None,
-            "target_concepts": [],
-            "policy": {},
-        }
-    return {
-        "last_concept": row[0],
-        "last_action": row[1],
-        "target_concepts": row[2] or [],
-        "policy": row[3] or {},
-    }
-
-
-def next_turn_index(cursor, session_id: str) -> int:
-    cursor.execute(
-        """
-        SELECT COALESCE(MAX(turn_index), -1)
-        FROM tutor_turn
-        WHERE session_id = %s::uuid
-        """,
-        (session_id,),
-    )
-    row = cursor.fetchone()
-    last_index = int(row[0]) if row and row[0] is not None else -1
-    return last_index + 1
-
-
-def get_recent_turns(cursor, session_id: str, limit: int = 6) -> List[Dict[str, Any]]:
-    """Fetch a small number of recent turns for history-aware policy decisions.
-
-    Returns newest-first rows with minimal fields to avoid pulling large payloads.
-    """
-    if limit <= 0:
-        return []
-    cursor.execute(
-        """
-        SELECT turn_index, user_text, intent, affect, concept, action_type, response_text
-        FROM tutor_turn
-        WHERE session_id = %s::uuid
-        ORDER BY turn_index DESC
-        LIMIT %s
-        """,
-        (session_id, limit),
-    )
-    rows = cursor.fetchall() or []
-    history: List[Dict[str, Any]] = []
-    for row in rows:
-        try:
-            history.append(
-                {
-                    "turn_index": int(row[0]) if row[0] is not None else None,
-                    "user_text": row[1],
-                    "intent": row[2],
-                    "affect": row[3],
-                    "concept": row[4],
-                    "action_type": row[5],
-                    "response_text": row[6],
-                }
+        if not row:
+            # Should not happen if session exists, but handle gracefully
+            return TutorContext(
+                session_id=session_id,
+                user_id=user_id,
+                policy_state=TutorSessionPolicy(),
+                mastery_map={},
             )
-        except Exception:
-            continue
-    return history
 
+        policy_data = row[0] or {}
+        target_concepts = row[1] or []
 
-def get_last_turn_retrieval(cursor, session_id: str) -> Optional[Dict[str, Any]]:
-    cursor.execute(
+        # 2. Fetch mastery map
+        self.cur.execute(
+            """
+            SELECT concept, mastery
+            FROM user_concept_mastery
+            WHERE user_id = %s::uuid
+            """,
+            (user_id,),
+        )
+        mastery_rows = self.cur.fetchall() or []
+        mastery_map = {
+            row[0]: {"mastery": float(row[1])}
+            for row in mastery_rows
+            if row[0]
+        }
+
+        # 3. Reconstruct TutorSessionPolicy
+        # Primary source: mdp_state (new environment orchestrator path)
+        mdp_state = policy_data.get("mdp_state", {}) or {}
+
+        # Backwards-compat: adapt legacy policy.session_plan from older
+        # step-engine sessions (including /api/test/init-tutor-session)
+        # into an mdp_state shape that SessionState builder understands.
+        if not mdp_state:
+            legacy_session_plan = policy_data.get("session_plan")
+            if isinstance(legacy_session_plan, dict):
+                try:
+                    legacy_strategy = (
+                        str(legacy_session_plan.get("strategy") or "")
+                        .strip()
+                        or "learning_path"
+                    )
+                except Exception:
+                    legacy_strategy = "learning_path"
+
+                # Prefer explicit concept_plan, fall back to legacy "concepts"
+                raw_concept_plan = legacy_session_plan.get("concept_plan")
+                if not isinstance(raw_concept_plan, list):
+                    raw_concept_plan = legacy_session_plan.get("concepts") or []
+
+                adapted_session_plan: Dict[str, Any] = {
+                    "strategy": legacy_strategy,
+                    "concept_plan": raw_concept_plan,
+                }
+                mdp_state = {
+                    "session_plan": adapted_session_plan,
+                    "session_plan_index": int(
+                        legacy_session_plan.get("current_index") or 0
+                    ),
+                    "session_strategy": legacy_strategy,
+                }
+
+        policy_state = TutorSessionPolicy(
+            session_plan=mdp_state.get("session_plan", {}),
+            session_plan_index=mdp_state.get("session_plan_index", 0),
+            session_strategy=mdp_state.get("session_strategy", "learning_path"),
+            concept_episode_id=mdp_state.get("concept_episode_id"),
+            concept_episode_mastery_start=mdp_state.get(
+                "concept_episode_mastery_start"
+            ),
+            srl_plan_step_index=mdp_state.get("srl_plan_step_index", 0),
+            # NEW: Load concept plan
+            concept_plan=mdp_state.get("concept_plan", {}),
+            quiz_phase=mdp_state.get("quiz_phase", ""),
+            quiz_question_index=mdp_state.get("quiz_question_index", 0),
+            quiz_max_questions=mdp_state.get("quiz_max_questions", 0),
+            concept_episode_quiz_correct=mdp_state.get(
+                "concept_episode_quiz_correct", 0
+            ),
+            concept_episode_quiz_wrong=mdp_state.get(
+                "concept_episode_quiz_wrong", 0
+            ),
+            concept_episode_step_count=mdp_state.get(
+                "concept_episode_step_count", 0
+            ),
+            concept_episode_last_control_type=mdp_state.get(
+                "concept_episode_last_control_type"
+            ),
+        )
+
+        # 4. Build Context
+        context = TutorContext(
+            session_id=session_id,
+            user_id=user_id,
+            policy_state=policy_state,
+            mastery_map=mastery_map,
+            # We can infer focus concept from policy state or session plan
+            # For now, let's leave it to the orchestrator to derive from state
+        )
+
+        return context
+
+    def save_context(self, context: TutorContext) -> None:
         """
-        SELECT turn_index, intent, affect, concept, source_chunk_ids, retrieval_metadata
+        Save the TutorContext (specifically the policy state) to the database.
+        """
+        logger.info(f"Saving context for session {context.session_id}")
+        policy_state = context.policy_state
+        
+        # 1. Serialize Policy State
+        mdp_state = {
+            "session_plan": policy_state.session_plan,
+            "session_plan_index": policy_state.session_plan_index,
+            "session_strategy": policy_state.session_strategy,
+            "concept_episode_id": policy_state.concept_episode_id,
+            "concept_episode_mastery_start": policy_state.concept_episode_mastery_start,
+            "srl_plan_step_index": policy_state.srl_plan_step_index,
+            # NEW: Save concept plan
+            "concept_plan": policy_state.concept_plan,
+            
+            "quiz_phase": policy_state.quiz_phase,
+            "quiz_question_index": policy_state.quiz_question_index,
+            "quiz_max_questions": policy_state.quiz_max_questions,
+            "concept_episode_quiz_correct": policy_state.concept_episode_quiz_correct,
+            "concept_episode_quiz_wrong": policy_state.concept_episode_quiz_wrong,
+            "concept_episode_step_count": policy_state.concept_episode_step_count,
+            "concept_episode_last_control_type": policy_state.concept_episode_last_control_type,
+        }
+
+        # 2. Fetch existing policy to merge (avoid overwriting other fields)
+        self.cur.execute(
+            """
+            SELECT policy
+            FROM tutor_session
+            WHERE id = %s::uuid
+            LIMIT 1
+            """,
+            (context.session_id,),
+        )
+        row = self.cur.fetchone()
+        current_policy_data = (row[0] or {}) if row else {}
+        
+        # 3. Update mdp_state
+        current_policy_data["mdp_state"] = mdp_state
+        
+        # 4. Save to DB
+        self.cur.execute(
+            """
+            UPDATE tutor_session
+            SET policy = %s,
+            updated_at = now()
+            WHERE id = %s::uuid
+            """,
+            (Json(current_policy_data), context.session_id),
+        )
+        
+        # Note: Mastery updates are typically handled by the quiz endpoint or specific
+        # mastery update logic. If the orchestrator updates mastery in memory,
+        # we should persist it here too.
+        # For now, we assume mastery updates happen via `user_concept_mastery` table
+        # which might be updated by the orchestrator's tools or separate logic.
+
+
+def next_turn_index(cur: Any, session_id: str) -> int:
+    """
+    Get the next turn index for a session.
+    
+    Args:
+        cur: Database cursor
+        session_id: Session ID
+        
+    Returns:
+        Next turn index (0-based)
+    """
+    cur.execute(
+        """
+        SELECT COUNT(*)
         FROM tutor_turn
         WHERE session_id = %s::uuid
-        ORDER BY turn_index DESC
-        LIMIT 1
         """,
-        (session_id,),
+        (session_id,)
     )
-    row = cursor.fetchone()
-    if not row:
-        return None
-
-    try:
-        turn_index = int(row[0]) if row[0] is not None else None
-    except Exception:
-        turn_index = None
-
-    intent = row[1]
-    affect = row[2]
-    concept = row[3]
-
-    raw_ids = row[4] or []
-    # Normalize source_chunk_ids which may be returned as a list or as a
-    # Postgres array string like "{uuid1,uuid2}".
-    normalized_ids: List[str] = []
-    try:
-        if isinstance(raw_ids, str):
-            txt = raw_ids.strip()
-            if txt.startswith("{") and txt.endswith("}"):
-                txt = txt[1:-1]
-            if txt:
-                parts = [p.strip() for p in txt.split(",") if p.strip()]
-                normalized_ids = parts
-        elif isinstance(raw_ids, (list, tuple)):
-            normalized_ids = [str(cid) for cid in raw_ids if cid is not None]
-    except Exception:
-        normalized_ids = []
-
-    source_chunk_ids = normalized_ids
-
-    retrieval_metadata = row[5] or {}
-    if not isinstance(retrieval_metadata, dict):
-        retrieval_metadata = {}
-
-    metadata_count = None
-    try:
-        metadata_count = int(retrieval_metadata.get("count")) if "count" in retrieval_metadata else None
-    except Exception:
-        metadata_count = None
-
-    chunk_count = metadata_count if metadata_count is not None else len(source_chunk_ids)
-
-    if not source_chunk_ids and not retrieval_metadata:
-        return None
-
-    return {
-        "turn_index": turn_index,
-        "intent": intent,
-        "affect": affect,
-        "concept": concept,
-        "source_chunk_ids": source_chunk_ids,
-        "retrieval_metadata": retrieval_metadata,
-        "chunk_count": chunk_count,
-    }
-
-
-def insert_turn(
-    cursor,
-    session_id: str,
-    turn_index: int,
-    user_text: str,
-    intent: str,
-    affect: str,
-    concept: Optional[str],
-    action_type: str,
-    response_text: str,
-    source_chunk_ids: List[str],
-    confidence: float,
-    mastery_delta: Optional[float],
-    *,
-    model_id: Optional[str] = None,
-    model_name: Optional[str] = None,
-    tool_calls: Optional[Dict[str, Any]] = None,
-    retrieval_metadata: Optional[Dict[str, Any]] = None,
-    policy_trace: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-    cursor.execute(
-        """
-        INSERT INTO tutor_turn (
-            session_id,
-            turn_index,
-            user_text,
-            intent,
-            affect,
-            concept,
-            action_type,
-            response_text,
-            source_chunk_ids,
-            confidence,
-            mastery_delta,
-            model_id,
-            model_name,
-            tool_calls,
-            retrieval_metadata,
-            policy_trace
-        )
-        VALUES (
-            %s::uuid,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s::uuid[],
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s
-        )
-        RETURNING id::text
-        """,
-        (
-            session_id,
-            turn_index,
-            user_text,
-            intent,
-            affect,
-            concept,
-            action_type,
-            response_text,
-            source_chunk_ids or [],
-            confidence,
-            mastery_delta,
-            model_id,
-            model_name,
-            Json(tool_calls) if tool_calls is not None else None,
-            Json(retrieval_metadata) if retrieval_metadata is not None else None,
-            Json(policy_trace) if policy_trace is not None else None,
-        ),
-    )
-    row = cursor.fetchone()
-    return row[0] if row else None
-
-
-def update_session(cursor, session_id: str, concept: Optional[str], action_type: str, policy: Dict[str, Any]) -> None:
-    cursor.execute(
-        """
-        UPDATE tutor_session
-        SET updated_at = now(),
-            last_concept = COALESCE(%s, last_concept),
-            last_action = %s,
-            policy = %s
-        WHERE id = %s::uuid
-        """,
-        (concept, action_type, Json(policy), session_id),
-    )
+    row = cur.fetchone()
+    count = row[0] if row else 0
+    return int(count)

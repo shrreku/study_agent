@@ -1,65 +1,32 @@
-"""Data structures for tutor turn execution context."""
+"""
+Runtime context for tutor agent turns.
 
-from __future__ import annotations
+Provides the TurnContext dataclass used by the API layer.
+"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
-from ..state import TutorSessionPolicy
-from ..policy_decision import TutorPolicyDecision
-from ..planning import TutorPlan
 
 
 @dataclass
 class TurnContext:
-    """Input context for a single tutor turn."""
+    """
+    Context for a single tutor turn.
+    
+    This is the input context provided by the API layer to the orchestrator.
+    """
     session_id: str
     user_id: str
     turn_index: int
     message: str
-    target_concepts: List[str]
-    resource_id: Optional[str]
-    dry_run: bool
-    emit_state_requested: bool
-    payload: Dict[str, Any]
-
-
-@dataclass
-class ClassificationContext:
-    """Classification results for a turn."""
-    intent: str
-    affect: str
-    concept: Optional[str]
-    confidence: Optional[float]
-
-
-@dataclass
-class ConceptContext:
-    """Concept and mastery state for a turn."""
-    focus_concept: Optional[str]
-    concept_level: str
-    learning_path: List[str]
-    learning_targets: List[str]
-    mastery_map: Dict[str, Dict[str, Any]]
-    prereq_check: Optional[Any]
-
-
-@dataclass
-class RetrievalContext:
-    """Retrieval results for a turn."""
-    chunks: List[Dict[str, Any]]
-    query: str
-    pedagogy_roles: List[str]
-    chunk_ids: List[str]
-
-
-@dataclass
-class DecisionContext:
-    """Context for policy and action decision-making."""
-    classification: ClassificationContext
-    concepts: ConceptContext
-    policy_state: TutorSessionPolicy
-    policy_decision: Optional[TutorPolicyDecision]
-    srl_mode: bool
-    plan: Optional[TutorPlan]
-    retrieval: RetrievalContext
+    
+    # Optional fields
+    target_concepts: Optional[List[str]] = None
+    resource_id: Optional[str] = None
+    dry_run: bool = False
+    emit_state_requested: bool = False
+    payload: Dict[str, Any] = field(default_factory=dict)
+    
+    def get_payload_field(self, key: str, default: Any = None) -> Any:
+        """Get a field from the payload dict."""
+        return self.payload.get(key, default)

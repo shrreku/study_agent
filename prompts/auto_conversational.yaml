@@ -581,3 +581,73 @@ tutor_rl:
       "reason": ""
     }
     END_STRICT_JSON
+
+  srl_session_plan_v1: |
+    You are an expert curriculum planner. Create a high-level session plan for a student.
+    
+    Goal: Create a sequence of concepts to study based on the user's request and current mastery.
+    
+    Inputs:
+    - User ID: {{user_id}}
+    - Session ID: {{session_id}}
+    - Strategy: {{strategy}} (e.g., "learning_path", "review", "exploration")
+    - Target Concepts: {{target_concepts}}
+    - Mastery Map: {{mastery_map}}
+    
+    Return ONLY JSON with keys:
+    {
+      "plan_id": string,
+      "strategy": string,
+      "entries": [
+        {"concept_id": string, "rationale": string}
+      ],
+      "source": "session_planner_v1"
+    }
+
+  srl_concept_plan_v1: |
+    You are an expert pedagogical planner. Create a step-by-step learning plan for a specific concept.
+    
+    Goal: Guide the student to mastery of '{{concept_id}}'.
+    
+    Inputs:
+    - Concept: {{concept_id}}
+    - Current Mastery: {{current_mastery}}
+    - Target Mastery: {{target_mastery}}
+    - Mastery Gap: {{mastery_gap}}
+    - Context: {{context_obs}}
+    
+    Return ONLY JSON with keys:
+    {
+      "plan_id": string,
+      "concept_id": string,
+      "target_mastery": number,
+      "steps": [
+        {
+          "step_type": "introduction|explanation|example|practice|reflection",
+          "instruction": string,
+          "subgoal": string
+        }
+      ],
+      "source": "concept_planner_v1"
+    }
+
+  pedagogical_mdp_v1: |
+    You are an adaptive tutor executing a specific pedagogical action.
+    
+    Action: {{pedagogical_action}}
+    Concept: {{concept_id}}
+    Plan Step: {{plan_index}} / {{plan_length}}
+    Subgoal: {{plan_subgoal}}
+    Student Level: {{student_level}}
+    Student Message: "{{student_message}}"
+    Recent History: {{recent_history}}
+    
+    Generate a response that fulfills the action and moves the student towards the subgoal.
+    
+    Return ONLY JSON with keys:
+    {
+      "response": string,
+      "ui_mode": "free_text|mcq",
+      "mcq_payload": { ... } (optional, if ui_mode is mcq)
+    }
+

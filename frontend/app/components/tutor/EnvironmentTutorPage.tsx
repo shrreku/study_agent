@@ -38,11 +38,18 @@ interface TutorResponse {
   debug?: EnvironmentDebug;
 }
 
+const AVAILABLE_MODELS = [
+  { id: 'anthropic/claude-haiku-4.5', name: 'Claude Haiku 4.5 (Default)' },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+  { id: 'gpt-4o', name: 'GPT-4o' },
+];
+
 export function EnvironmentTutorPage() {
   const { token } = useAuth({ requireAuth: true });
   
   const [sessionId, setSessionId] = useState('');
   const [targetConcepts, setTargetConcepts] = useState('Heat_Transfer,Convection,Conduction');
+  const [selectedModel, setSelectedModel] = useState('anthropic/claude-haiku-4.5');
   const [messages, setMessages] = useState<TutorMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +130,7 @@ export function EnvironmentTutorPage() {
           body: JSON.stringify({
             message: msg,
             confirmed_action: null,
+            model_hint: selectedModel,
           }),
         }
       );
@@ -171,6 +179,7 @@ export function EnvironmentTutorPage() {
           body: JSON.stringify({
             message: '',
             confirmed_action: 'continue',
+            model_hint: selectedModel,
           }),
         }
       );
@@ -196,6 +205,62 @@ export function EnvironmentTutorPage() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to continue');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const clickReplan = async () => {
+    if (!sessionId) return;
+
+    setLoading(true);
+    setError(null);
+
+    // Add user action indicator
+    setMessages(prev => [...prev, {
+      role: 'user',
+      content: '[Requested Re-plan]',
+      timestamp: new Date(),
+    }]);
+
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/tutor/pedagogy/session/${sessionId}/message`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader(),
+          },
+          body: JSON.stringify({
+            message: '',
+            step_control: { type: 'replan_concept' },
+            model_hint: selectedModel,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(`Failed to replan: ${res.statusText}`);
+      }
+
+      const data: TutorResponse = await res.json();
+      
+      // Add assistant messages
+      if (data.messages && data.messages.length > 0) {
+        const assistantMessages = data.messages.map(m => ({
+          ...m,
+          timestamp: new Date(),
+        }));
+        setMessages(prev => [...prev, ...assistantMessages]);
+      }
+
+      // Update debug info
+      if (data.debug) {
+        setDebug(data.debug);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to replan');
     } finally {
       setLoading(false);
     }
@@ -262,9 +327,23 @@ export function EnvironmentTutorPage() {
                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="e.g., Heat_Transfer, Convection, Conduction"
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  Enter the concepts you want to learn about
-                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  LLM Model
+                </label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                >
+                  {AVAILABLE_MODELS.map(model => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <button
@@ -408,25 +487,36 @@ export function EnvironmentTutorPage() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Continue Button */}
+            {/* Control Buttons */}
             <div className="border-t border-gray-200 p-4 bg-gray-50">
-              <button
-                onClick={clickContinue}
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-4 rounded-xl font-semibold hover:from-blue-700 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
-              >
-                {loading ? (
-                  <>
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    Continue
-                    <span className="text-xl">→</span>
-                  </>
-                )}
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={clickContinue}
+                  disabled={loading}
+                  className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-4 rounded-xl font-semibold hover:from-blue-700 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
+                >
+                  {loading ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      Continue
+                      <span className="text-xl">→</span>
+                    </>
+                  )}
+                </button>
+                
+                <button
+                  onClick={clickReplan}
+                  disabled={loading}
+                  className="bg-white text-gray-700 border border-gray-300 px-6 py-4 rounded-xl font-semibold hover:bg-gray-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md flex items-center justify-center gap-2"
+                >
+                  <span className="text-xl">🔄</span>
+                  Re-plan
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+import logging
 
 from llm import call_llm_json
 from prompts import get as prompt_get, render as prompt_render
@@ -9,16 +10,21 @@ from ..mdp.pedagogical_tutor import PedagogicalTutorAction, PedagogicalTutorStat
 from ..mdp.plans import ConceptPlan
 
 
-class DefaultPedagogicalResponseGeneratorTool:
-    """Default implementation of the PedagogicalResponseGeneratorTool.
+logger = logging.getLogger(__name__)
 
-    This is intentionally lightweight and prompt-agnostic. It maps
-    PedagogicalTutorAction values into simple, well-formed tutor messages and
-    UI payloads suitable for development and testing.
+
+class DefaultPedagogicalResponseGeneratorTool:
+    """Minimal pedagogical response generator for tutor MDP.
+
+    Uses a single YAML-backed prompt (tutor.pedagogical_mdp_v1) and the
+    generic llm.call_llm_json helper. Focuses only on:
+    - concept name
+    - pedagogical action name
+    - optional trigger (for logging/debug only)
     """
 
     def __init__(self, config: Optional[Any] = None) -> None:
-        self._config = config
+        self._config = config or {}
 
     def __call__(
         self,
@@ -31,13 +37,23 @@ class DefaultPedagogicalResponseGeneratorTool:
         concept_plan: Optional[ConceptPlan],
         context_obs: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """Generate a single tutor message for the given pedagogical action.
+
+        Required inputs:
+        - concept_id: current concept name/ID
+        - pedagogical_action: MDP action enum
+        - context_obs["student_message"]: latest student utterance (may be empty)
+
+        Optional inputs:
+        - context_obs["trigger"]: e.g. "continue_plan", "new_plan" (for logging)
+        """
+
         action = pedagogical_action
-        ui_mode = "free_text"
-        mcq_payload: Optional[Dict[str, Any]] = None
+        student_message = context_obs.get("student_message") or ""
+        trigger = context_obs.get("trigger") or "unspecified"
 
-        user_message = context_obs.get("student_message") or ""
-
-        # Extract plan step metadata for the prompt.
+        # Map core state into the MDP prompt payload. Tutor state is still
+        # minimal, so we only rely on plan index/length when present.
         plan_index = int(getattr(ped_state, "plan_index", 0) or 0)
         plan_length = int(getattr(ped_state, "plan_length", 0) or 0)
         plan_subgoal: Optional[str] = None
@@ -60,72 +76,43 @@ class DefaultPedagogicalResponseGeneratorTool:
             "plan_length": plan_length,
             "plan_subgoal": plan_subgoal or "",
             "student_level": student_level,
-            "student_message": user_message,
+            "student_message": student_message,
             "recent_history": recent_history,
         }
 
-        llm_result: Optional[Dict[str, Any]] = None
+        prompt_key = "tutor.pedagogical_mdp_v1"
+        template = prompt_get(prompt_key)
+        prompt = prompt_render(template, prompt_payload)
+
+        default_payload: Dict[str, Any] = {
+            "response": "Let's continue with this concept.",
+            "ui_mode": "free_text",
+            "mcq_payload": None,
+        }
+
         try:
-            template = prompt_get("tutor.pedagogical_mdp_v1")
-            prompt = prompt_render(template, prompt_payload)
-            result = call_llm_json(prompt, model_hint=None)
-            if isinstance(result, dict):
-                llm_result = result
+            logger.info(
+                "ped_response_mdp_call action=%s concept_id=%s plan_index=%s plan_length=%s trigger=%s prompt_key=%s",
+                action.value,
+                concept_id,
+                plan_index,
+                plan_length,
+                trigger,
+                prompt_key,
+            )
+            result = call_llm_json(prompt, default_payload)
         except Exception:
-            llm_result = None
+            logger.exception(
+                "ped_response_mdp_error action=%s concept_id=%s trigger=%s",
+                action.value,
+                concept_id,
+                trigger,
+            )
+            result = default_payload
 
-        text: str
-        use_fallback = False
-        if llm_result is not None:
-            raw_text = llm_result.get("response")
-            raw_mode = llm_result.get("ui_mode")
-            # Basic validation of required fields
-            if not isinstance(raw_text, str) or not raw_text.strip() or not isinstance(raw_mode, str):
-                use_fallback = True
-            else:
-                text = raw_text.strip()
-                ui_mode_candidate = raw_mode.strip()
-                if ui_mode_candidate not in {"free_text", "mcq"}:
-                    use_fallback = True
-                else:
-                    ui_mode = ui_mode_candidate
-                    raw_mcq = llm_result.get("mcq_payload")
-                    if ui_mode == "mcq":
-                        # For MCQ mode we require a dict payload; otherwise fallback.
-                        if isinstance(raw_mcq, dict):
-                            mcq_payload = raw_mcq
-                        else:
-                            use_fallback = True
-        else:
-            use_fallback = True
-
-        if use_fallback:
-            # Fallback to a simple, deterministic behaviour if the LLM call fails
-            # or returns an invalid / malformed payload.
-            if action is PedagogicalTutorAction.QUIZ_MCQ:
-                ui_mode = "mcq"
-                mcq_payload = self._build_simple_mcq(concept_id=concept_id, context_obs=context_obs)
-                text = "Let's check your understanding with a quick question."
-            elif action is PedagogicalTutorAction.EXPLAIN:
-                text = "Let me explain this idea step by step."
-            elif action is PedagogicalTutorAction.DEFINE_TERM:
-                text = "I'll start by defining the key term we are working with."
-            elif action is PedagogicalTutorAction.WORKED_EXAMPLE:
-                text = "I'll walk through a worked example so you can see how it applies."
-            elif action is PedagogicalTutorAction.GUIDED_PRACTICE:
-                text = "Now it's your turn to try a similar problem. I'll guide you through it."
-            elif action is PedagogicalTutorAction.ASK_QUESTION:
-                text = "Here's a question for you: what part of this concept feels unclear so far?"
-            elif action is PedagogicalTutorAction.REFLECTION_PROMPT:
-                text = "Take a moment to summarize in your own words what you've learned so far."
-            elif action is PedagogicalTutorAction.SUMMARY:
-                text = "Let's quickly summarize the key points we've covered before we move on."
-            else:
-                text = "Let's continue working on this concept together."
-
-        if user_message:
-            # Light acknowledgment of the student's latest message.
-            text = text + "\n\nYou said: " + str(user_message)
+        # Minimal handling: we only care about a text response for now and
+        # keep ui_mode fixed to free_text. MCQ support can be added later.
+        text = result.get("response") or default_payload["response"]
 
         messages = [
             {
@@ -136,11 +123,12 @@ class DefaultPedagogicalResponseGeneratorTool:
 
         debug: Dict[str, Any] = {
             "pedagogical_action": action.value,
-            "phase": ped_state.phase,
-            "plan_index": ped_state.plan_index,
-            "plan_length": ped_state.plan_length,
             "concept_id": concept_id,
             "session_id": session_id,
+            "plan_index": plan_index,
+            "plan_length": plan_length,
+            "trigger": trigger,
+            "prompt_key": prompt_key,
         }
 
         if concept_plan is not None:
@@ -148,37 +136,7 @@ class DefaultPedagogicalResponseGeneratorTool:
 
         return {
             "messages": messages,
-            "ui_mode": ui_mode,
-            "mcq_payload": mcq_payload,
+            "ui_mode": "free_text",
+            "mcq_payload": None,
             "debug": debug,
-        }
-
-    def _build_simple_mcq(
-        self,
-        *,
-        concept_id: str,
-        context_obs: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Construct a minimal MCQ payload for development and testing.
-
-        This can be replaced or extended by more sophisticated generators
-        without changing the main tool interface.
-        """
-
-        question_text = context_obs.get("mcq_question") or (
-            f"Which statement about '{concept_id}' is correct?"
-        )
-
-        options = [
-            {"id": "A", "text": "I feel confident with this concept."},
-            {"id": "B", "text": "I am somewhat unsure."},
-            {"id": "C", "text": "I do not understand it yet."},
-        ]
-
-        correct_option_id = context_obs.get("mcq_correct_option_id") or "A"
-
-        return {
-            "question": question_text,
-            "options": options,
-            "correct_option_id": correct_option_id,
         }

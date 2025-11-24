@@ -223,6 +223,7 @@ class EnvironmentStateManager:
             "current_step_index": concept_state.get("current_step_index", 0),
             "current_mastery": current_mastery,
             "phase": concept_state.get("phase", "learning"),
+            "terminated": bool(concept_state.get("terminated", False)),
         }
     
     def save_concept_state(
@@ -246,6 +247,8 @@ class EnvironmentStateManager:
             "phase": state.phase,
             "steps_completed": state.steps_completed,
             "plan_version": state.plan_version,
+            "terminated": state.terminated,
+            "termination_reason": state.termination_reason,
         }
         
         if state.concept_plan:
@@ -344,7 +347,6 @@ class PlanCoordinator:
         session_id: str,
         concept_id: str,
         target_mastery: float,
-        current_mastery: float,
         context_obs: Dict[str, Any],
     ) -> ConceptPlan:
         """Generate a concept learning plan.
@@ -354,13 +356,16 @@ class PlanCoordinator:
             session_id: Session identifier
             concept_id: Concept to plan for
             target_mastery: Goal mastery level
-            current_mastery: Starting mastery
-            context_obs: Additional context for planning
+            context_obs: Additional context for planning (may include
+                current_mastery for downstream tools)
             
         Returns:
             ConceptPlan with learning steps
         """
-        # Use the existing concept planner tool
+        # Use the existing concept planner tool. The underlying
+        # ConceptPlannerTool already takes ``target_mastery`` and an
+        # arbitrary ``context_obs`` dict; if a downstream implementation
+        # wants ``current_mastery`` it can read it from that dict.
         return self.concept_planner(
             user_id=user_id,
             session_id=session_id,

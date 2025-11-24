@@ -1,231 +1,145 @@
-"""
-Session Environment - Layer 1 of 3-layer MDP.
-
-Manages the overall study session, concept sequencing, and session-level goals.
-
-Responsibilities:
-- Track which concept is currently being studied
-- Decide when to move to the next concept
-- Determine when the session should end
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from .base import BaseEnvironment, EnvironmentState, EnvironmentTransition
-from .context import SessionContext
-from ..mdp.plans import SessionPlan, SessionPlanEntry
+from .base import BaseEnvironment, EnvironmentTransition
+from ..mdp.plans import SessionPlan
+
+
+@dataclass
+class SessionState:
+    """Environment-facing session state.
+
+    This is a compact, deterministic view of the session-level state used
+    by the environment orchestrator. Persistence of richer MDP state
+    remains in the TutorSessionPolicy / mdp_state.
+    """
+
+    session_id: str
+    user_id: str
+
+    session_plan: Optional[SessionPlan] = None
+    current_concept_index: int = 0
+    concepts_completed: int = 0
+
+    mastery_map: Dict[str, float] = field(default_factory=dict)
+
+    turn_count: int = 0
+    terminated: bool = False
+    termination_reason: Optional[str] = None
+
+    @property
+    def current_concept_id(self) -> Optional[str]:
+        if not self.session_plan:
+            return None
+        if self.current_concept_index < 0:
+            return None
+        entries = self.session_plan.entries or []
+        if self.current_concept_index >= len(entries):
+            return None
+        return entries[self.current_concept_index].concept_id
 
 
 class SessionAction(str, Enum):
-    """Action space for session-level decisions."""
-    
+    """High-level session environment actions.
+
+    These are macro decisions about which concept to study and when to end
+    the session. Policies operate over this space given the current
+    SessionState (or a derived observation).
+    """
+
     START_CONCEPT = "START_CONCEPT"
-    CONTINUE_CONCEPT = "CONTINUE_CONCEPT"
     ADVANCE_CONCEPT = "ADVANCE_CONCEPT"
     END_SESSION = "END_SESSION"
 
 
-@dataclass
-class SessionState(EnvironmentState):
-    """State for the session environment.
-    
-    Tracks progress through the session plan and concept mastery.
-    """
-    
-    session_plan: Optional[SessionPlan] = None
-    current_concept_index: int = 0
-    concepts_completed: int = 0
-    mastery_map: Dict[str, float] = field(default_factory=dict)
-    turn_count: int = 0
-    
-    def get_current_concept_id(self) -> Optional[str]:
-        """Get the ID of the concept currently being studied.
-        
-        Returns:
-            Concept ID or None if no plan or session complete
-        """
-        if self.session_plan is None or not self.session_plan.entries:
-            return None
-        
-        if 0 <= self.current_concept_index < len(self.session_plan.entries):
-            return self.session_plan.entries[self.current_concept_index].concept_id
-        
-        return None
-    
-    def is_session_complete(self) -> bool:
-        """Check if all planned concepts have been covered.
-        
-        Returns:
-            True if session should end
-        """
-        if self.session_plan is None or not self.session_plan.entries:
-            return True
-        
-        return self.current_concept_index >= len(self.session_plan.entries)
-
-
 class SessionEnvironment(BaseEnvironment[SessionState]):
-    """Environment for managing the overall study session.
-    
-    This is Layer 1 of the 3-layer MDP architecture. It coordinates
-    concept-level episodes and maintains session-level state.
+    """Deterministic session environment.
+
+    The transition dynamics are stationary and purely a function of the
+    current state and action. Buttons from the UI are interpreted by the
+    orchestrator/policies and passed in as actions.
     """
-    
+
     def __init__(
         self,
+        *,
         session_id: str,
         user_id: str,
         session_plan: Optional[SessionPlan] = None,
-        initial_mastery_map: Optional[Dict[str, float]] = None,
-    ):
-        """Initialize session environment.
-        
-        Args:
-            session_id: Unique session identifier
-            user_id: User identifier
-            session_plan: Pre-built session plan or None
-            initial_mastery_map: Current mastery levels for concepts
-        """
-        episode_id = f"session-{session_id}"
-        
-        state = SessionState(
-            episode_id=episode_id,
+        mastery_map: Optional[Dict[str, float]] = None,
+    ) -> None:
+        self.state = SessionState(
             session_id=session_id,
             user_id=user_id,
             session_plan=session_plan,
-            current_concept_index=0,
-            concepts_completed=0,
-            mastery_map=dict(initial_mastery_map or {}),
-            turn_count=0,
-            terminated=False,
+            mastery_map=dict(mastery_map or {}),
         )
-        
-        super().__init__(state)
-    
-    def reset(self) -> SessionState:
-        """Reset session to initial state.
-        
-        Returns:
-            Fresh session state
-        """
+
+    def reset(
+        self,
+        session_plan: Optional[SessionPlan] = None,
+        mastery_map: Optional[Dict[str, float]] = None,
+    ) -> SessionState:
+        self.state.session_plan = session_plan
         self.state.current_concept_index = 0
         self.state.concepts_completed = 0
+        self.state.mastery_map = dict(mastery_map or {})
         self.state.turn_count = 0
         self.state.terminated = False
         self.state.termination_reason = None
-        
         return self.state
-    
-    def step(
-        self,
-        action: SessionAction,
-        concept_complete: bool = False,
-        concept_mastery: Optional[float] = None,
-        **kwargs
-    ) -> EnvironmentTransition:
-        """Execute one session-level step.
-        
-        Args:
-            action: Session action to take
-            concept_complete: Whether current concept episode ended
-            concept_mastery: Updated mastery for current concept
-            **kwargs: Additional context
-            
-        Returns:
-            Transition with updated state
-        """
-        self.state.turn_count += 1
-        
-        outputs: Dict = {}
-        info: Dict = {
-            "action": action.value,
-            "turn_count": self.state.turn_count,
-        }
-        
-        # Update mastery if provided
-        current_concept = self.state.get_current_concept_id()
-        if current_concept and concept_mastery is not None:
-            self.state.mastery_map[current_concept] = concept_mastery
-            info["mastery_updated"] = True
-        
-        # Handle actions
-        if action == SessionAction.END_SESSION:
-            self.state.terminated = True
-            self.state.termination_reason = "user_requested_end"
-            outputs["session_message"] = "Session ended. Great work!"
-        
+
+    def step(self, action: SessionAction, **kwargs: object) -> EnvironmentTransition[SessionState]:
+        state = self.state
+
+        if state.terminated:
+            # No further transitions once terminated.
+            return EnvironmentTransition(state=state, outputs={"focus_concept": None}, terminated=True, termination_reason=state.termination_reason)
+
+        state.turn_count += 1
+        outputs: Dict[str, object] = {}
+
+        if action == SessionAction.START_CONCEPT:
+            # Ensure we have a valid current concept; do not advance index here.
+            current = state.current_concept_id
+            outputs["focus_concept"] = current
+
         elif action == SessionAction.ADVANCE_CONCEPT:
-            if concept_complete:
-                self.state.concepts_completed += 1
-                self.state.current_concept_index += 1
-                
-                info["concept_advanced"] = True
-                info["new_index"] = self.state.current_concept_index
-                
-                # Check if session is now complete
-                if self.state.is_session_complete():
-                    self.state.terminated = True
-                    self.state.termination_reason = "all_concepts_complete"
-                    outputs["session_message"] = "All concepts covered! Session complete."
-                else:
-                    next_concept = self.state.get_current_concept_id()
-                    outputs["transition_message"] = f"Moving to next concept: {next_concept}"
-        
-        elif action == SessionAction.START_CONCEPT:
-            current_concept = self.state.get_current_concept_id()
-            if current_concept:
-                outputs["focus_concept"] = current_concept
-                info["concept_started"] = True
-        
-        elif action == SessionAction.CONTINUE_CONCEPT:
-            # No state change, just continuing current concept
-            info["continuing"] = True
-        
+            # Move to the next concept if available; otherwise terminate.
+            if state.session_plan and state.current_concept_index < len(state.session_plan.entries):
+                state.concepts_completed += 1
+                state.current_concept_index += 1
+
+            current = state.current_concept_id
+            outputs["focus_concept"] = current
+
+            if current is None:
+                state.terminated = True
+                state.termination_reason = "completed_plan"
+
+        elif action == SessionAction.END_SESSION:
+            state.terminated = True
+            state.termination_reason = "session_end"
+            outputs["focus_concept"] = None
+
+        else:
+            # Unknown action: no-op but keep determinism.
+            outputs["focus_concept"] = state.current_concept_id
+
+        outputs["session_complete"] = bool(state.terminated)
+
         return EnvironmentTransition(
-            next_state=self.state,
+            state=state,
             outputs=outputs,
-            info=info,
-            terminated=self.state.terminated,
-            termination_reason=self.state.termination_reason,
+            terminated=state.terminated,
+            termination_reason=state.termination_reason,
         )
-    
-    def set_session_plan(self, plan: SessionPlan) -> None:
-        """Set or update the session plan.
-        
-        Args:
-            plan: SessionPlan to use
-        """
-        self.state.session_plan = plan
-        self.state.current_concept_index = 0
-    
-    def get_current_concept(self) -> Optional[str]:
-        """Get the concept that should be studied now.
-        
-        Returns:
-            Concept ID or None
-        """
-        return self.state.get_current_concept_id()
-    
-    def get_mastery(self, concept_id: str) -> float:
-        """Get mastery level for a concept.
-        
-        Args:
-            concept_id: Concept to query
-            
-        Returns:
-            Mastery level (0.0 to 1.0)
-        """
-        return self.state.mastery_map.get(concept_id, 0.0)
-    
-    def update_mastery(self, concept_id: str, mastery: float) -> None:
-        """Update mastery for a concept.
-        
-        Args:
-            concept_id: Concept to update
-            mastery: New mastery level
-        """
-        self.state.mastery_map[concept_id] = max(0.0, min(1.0, mastery))
+
+    def get_state(self) -> SessionState:
+        return self.state
+
+    def is_terminated(self) -> bool:
+        return bool(self.state.terminated)

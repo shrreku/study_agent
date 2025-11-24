@@ -23,6 +23,7 @@ class PedagogicalTutorAction(str, Enum):
     REFLECTION_PROMPT = "REFLECTION_PROMPT"
     SUMMARY = "SUMMARY"
     QUIZ_MCQ = "QUIZ_MCQ"
+    WAIT_FOR_CONFIRMATION = "WAIT_FOR_CONFIRMATION"
 
 
 @dataclass

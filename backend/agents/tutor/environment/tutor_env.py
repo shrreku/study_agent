@@ -1,324 +1,181 @@
-"""
-Tutor Environment - Layer 3 of 3-layer MDP.
-
-Executes individual pedagogical actions and generates tutor responses.
-
-Responsibilities:
-- Execute one plan step into concrete tutor messages
-- Generate appropriate UI controls (buttons)
-- Handle user interactions (button clicks)
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
-from .base import BaseEnvironment, EnvironmentState, EnvironmentTransition
-from .context import TutorContext
-from ..mdp.plans import ConceptPlanStep
-
-
-class TutorAction(str, Enum):
-    """Action space for tutor-level pedagogical moves."""
-    
-    EXPLAIN = "EXPLAIN"
-    ASK_QUESTION = "ASK_QUESTION"
-    WORKED_EXAMPLE = "WORKED_EXAMPLE"
-    GUIDED_PRACTICE = "GUIDED_PRACTICE"
-    SUMMARY = "SUMMARY"
-    QUIZ = "QUIZ"
-    TRANSITION = "TRANSITION"  # Moving between concepts/phases
+from .base import BaseEnvironment, EnvironmentTransition
+from ..mdp.pedagogical_tutor import PedagogicalTutorAction
+from ..mdp.plans import ConceptPlan, ConceptPlanStep
+from ..mdp.tools import PedagogicalResponseGeneratorTool
 
 
 @dataclass
-class TutorState(EnvironmentState):
-    """State for the tutor environment.
-    
-    Tracks the current pedagogical action and interaction context.
+class TutorState:
+    """Environment-facing tutor state.
+
+    Tracks the current pedagogical step, last action, and whether the
+    tutor is awaiting a button signal from the learner.
     """
-    
-    concept_id: str = ""
+
+    session_id: str
+    user_id: str
+    concept_id: str
+
     current_step: Optional[ConceptPlanStep] = None
-    last_action: Optional[TutorAction] = None
+    last_action: Optional[PedagogicalTutorAction] = None
+
     awaiting_user_input: bool = False
-    button_label: str = "Continue"
-    action_history: List[str] = field(default_factory=list)
     turn_in_step: int = 0
+
+    last_control_signal: Optional[str] = None
+    plan_index: int = 0
+    plan_length: int = 0
+    phase: str = "learning"
+
+
+@dataclass
+class _PedagogicalShim:
+    """Minimal state object for the pedagogical response tool.
+
+    The default response tool only needs ``phase``, ``plan_index`` and
+    ``plan_length`` from the pedagogical tutor state, so we provide a
+    lightweight shim instead of the full MDP state.
+    """
+
+    phase: str
+    plan_index: int
+    plan_length: int
+
+
+class TutorAction(str, Enum):
+    """Alias of pedagogical tutor actions for the environment layer."""
+
+    EXPLAIN = PedagogicalTutorAction.EXPLAIN.value
+    ASK_QUESTION = PedagogicalTutorAction.ASK_QUESTION.value
+    WORKED_EXAMPLE = PedagogicalTutorAction.WORKED_EXAMPLE.value
+    GUIDED_PRACTICE = PedagogicalTutorAction.GUIDED_PRACTICE.value
+    DEFINE_TERM = PedagogicalTutorAction.DEFINE_TERM.value
+    REFLECTION_PROMPT = PedagogicalTutorAction.REFLECTION_PROMPT.value
+    SUMMARY = PedagogicalTutorAction.SUMMARY.value
+    QUIZ_MCQ = PedagogicalTutorAction.QUIZ_MCQ.value
+    WAIT_FOR_CONFIRMATION = PedagogicalTutorAction.WAIT_FOR_CONFIRMATION.value
+
+    def to_pedagogical_action(self) -> PedagogicalTutorAction:
+        return PedagogicalTutorAction(self.value)
 
 
 class TutorEnvironment(BaseEnvironment[TutorState]):
-    """Environment for executing individual pedagogical actions.
-    
-    This is Layer 3 of the 3-layer MDP architecture. It translates
-    plan steps into concrete tutor messages and UI elements.
+    """Deterministic tutor environment.
+
+    Given a current plan step and a tutor action (chosen by a policy),
+    produces tutor-facing outputs (messages, buttons) via the
+    PedagogicalResponseGeneratorTool.
     """
-    
+
     def __init__(
         self,
+        *,
         session_id: str,
         user_id: str,
         concept_id: str,
-    ):
-        """Initialize tutor environment.
-        
-        Args:
-            session_id: Parent session ID
-            user_id: User identifier
-            concept_id: Current concept being taught
-        """
-        episode_id = f"tutor-{session_id}-{concept_id}"
-        
-        state = TutorState(
-            episode_id=episode_id,
+        response_tool: PedagogicalResponseGeneratorTool,
+        current_step: Optional[ConceptPlanStep] = None,
+        concept_plan: Optional[ConceptPlan] = None,
+        plan_index: int = 0,
+        phase: str = "learning",
+    ) -> None:
+        self.state = TutorState(
             session_id=session_id,
             user_id=user_id,
             concept_id=concept_id,
-            current_step=None,
-            last_action=None,
-            awaiting_user_input=False,
-            button_label="Continue",
-            action_history=[],
-            turn_in_step=0,
-            terminated=False,
+            current_step=current_step,
         )
-        
-        super().__init__(state)
-    
-    def reset(self) -> TutorState:
-        """Reset tutor environment to initial state.
-        
-        Returns:
-            Fresh tutor state
-        """
-        self.state.current_step = None
+        self.state.plan_index = int(plan_index or 0)
+        self.state.plan_length = (
+            len(concept_plan.steps) if concept_plan and concept_plan.steps else 0
+        )
+        self.state.phase = phase
+        self._concept_plan = concept_plan
+        self._response_tool = response_tool
+
+    def reset(
+        self,
+        current_step: Optional[ConceptPlanStep] = None,
+        concept_plan: Optional[ConceptPlan] = None,
+        plan_index: int = 0,
+        phase: str = "learning",
+    ) -> TutorState:
+        self.state.current_step = current_step
         self.state.last_action = None
         self.state.awaiting_user_input = False
-        self.state.button_label = "Continue"
-        self.state.action_history = []
         self.state.turn_in_step = 0
-        self.state.terminated = False
-        self.state.termination_reason = None
-        
-        return self.state
-    
-    def step(
-        self,
-        action: TutorAction,
-        step: Optional[ConceptPlanStep] = None,
-        user_clicked: bool = False,
-        **kwargs
-    ) -> EnvironmentTransition:
-        """Execute one tutor-level step.
-        
-        Args:
-            action: Tutor action to take
-            step: Plan step to execute (if applicable)
-            user_clicked: Whether user clicked button
-            **kwargs: Additional context
-            
-        Returns:
-            Transition with tutor response
-        """
-        self.state.turn_in_step += 1
-        
-        outputs: Dict[str, Any] = {
-            "messages": [],
-            "ui_mode": "buttons_only",
-            "button_options": [],
-        }
-        
-        info = {
-            "action": action.value,
-            "turn_in_step": self.state.turn_in_step,
-        }
-        
-        # Update state
-        self.state.last_action = action
-        if step is not None:
-            self.state.current_step = step
-        
-        # Record action in history
-        self.state.action_history.append(action.value)
-        if len(self.state.action_history) > 10:
-            self.state.action_history = self.state.action_history[-10:]
-        
-        # Generate response based on action
-        if action == TutorAction.EXPLAIN:
-            message = self._generate_explanation(step, **kwargs)
-            outputs["messages"].append({
-                "role": "assistant",
-                "content": message,
-            })
-            outputs["button_options"] = ["Continue"]
-            self.state.button_label = "Continue"
-            self.state.awaiting_user_input = True
-            info["explanation_generated"] = True
-        
-        elif action == TutorAction.ASK_QUESTION:
-            message = self._generate_question(step, **kwargs)
-            outputs["messages"].append({
-                "role": "assistant",
-                "content": message,
-            })
-            outputs["button_options"] = ["Continue"]
-            self.state.button_label = "Continue"
-            self.state.awaiting_user_input = True
-            info["question_generated"] = True
-        
-        elif action == TutorAction.WORKED_EXAMPLE:
-            message = self._generate_worked_example(step, **kwargs)
-            outputs["messages"].append({
-                "role": "assistant",
-                "content": message,
-            })
-            outputs["button_options"] = ["Continue"]
-            self.state.button_label = "Continue"
-            self.state.awaiting_user_input = True
-            info["example_generated"] = True
-        
-        elif action == TutorAction.SUMMARY:
-            message = self._generate_summary(step, **kwargs)
-            outputs["messages"].append({
-                "role": "assistant",
-                "content": message,
-            })
-            outputs["button_options"] = ["Continue"]
-            self.state.button_label = "Continue"
-            self.state.awaiting_user_input = True
-            info["summary_generated"] = True
-        
-        elif action == TutorAction.TRANSITION:
-            message = self._generate_transition(**kwargs)
-            outputs["messages"].append({
-                "role": "assistant",
-                "content": message,
-            })
-            outputs["button_options"] = ["Continue"]
-            self.state.button_label = "Continue"
-            self.state.awaiting_user_input = True
-            info["transition_generated"] = True
-        
-        # Handle user interaction
-        if user_clicked:
-            self.state.awaiting_user_input = False
-            info["user_clicked"] = True
-            outputs["step_complete"] = True
-        
-        return EnvironmentTransition(
-            next_state=self.state,
-            outputs=outputs,
-            info=info,
-            terminated=self.state.terminated,
-            termination_reason=self.state.termination_reason,
+        self.state.last_control_signal = None
+        self.state.plan_index = int(plan_index or 0)
+        self.state.plan_length = (
+            len(concept_plan.steps) if concept_plan and concept_plan.steps else 0
         )
-    
-    def set_current_step(self, step: ConceptPlanStep) -> None:
-        """Set the current plan step to execute.
-        
-        Args:
-            step: Plan step to work on
-        """
-        self.state.current_step = step
-        self.state.turn_in_step = 0
-    
-    def _generate_explanation(
-        self,
-        step: Optional[ConceptPlanStep],
-        **kwargs
-    ) -> str:
-        """Generate explanation message.
-        
-        Args:
-            step: Plan step with instruction
-            **kwargs: Additional context
-            
-        Returns:
-            Explanation text
-        """
-        if step and step.instruction:
-            return step.instruction
-        
-        return "Let me explain this concept..."
-    
-    def _generate_question(
-        self,
-        step: Optional[ConceptPlanStep],
-        **kwargs
-    ) -> str:
-        """Generate question message.
-        
-        Args:
-            step: Plan step with instruction
-            **kwargs: Additional context
-            
-        Returns:
-            Question text
-        """
-        if step and step.instruction:
-            return step.instruction
-        
-        return "Let me ask you a question..."
-    
-    def _generate_worked_example(
-        self,
-        step: Optional[ConceptPlanStep],
-        **kwargs
-    ) -> str:
-        """Generate worked example message.
-        
-        Args:
-            step: Plan step with instruction
-            **kwargs: Additional context
-            
-        Returns:
-            Example text
-        """
-        if step and step.instruction:
-            return step.instruction
-        
-        return "Here's an example..."
-    
-    def _generate_summary(
-        self,
-        step: Optional[ConceptPlanStep],
-        **kwargs
-    ) -> str:
-        """Generate summary message.
-        
-        Args:
-            step: Plan step with instruction
-            **kwargs: Additional context
-            
-        Returns:
-            Summary text
-        """
-        if step and step.instruction:
-            return step.instruction
-        
-        concept_id = kwargs.get("concept_id", self.state.concept_id)
-        return f"Let's summarize what we've learned about {concept_id}..."
-    
-    def _generate_transition(self, **kwargs) -> str:
-        """Generate transition message.
-        
-        Args:
-            **kwargs: Context including next_concept, etc.
-            
-        Returns:
-            Transition text
-        """
-        next_concept = kwargs.get("next_concept")
-        if next_concept:
-            return f"Great! Now let's move on to {next_concept}."
-        
-        return "Moving to the next part..."
-    
-    def is_awaiting_input(self) -> bool:
-        """Check if tutor is waiting for user interaction.
-        
-        Returns:
-            True if awaiting button click or other input
-        """
-        return self.state.awaiting_user_input
+        self.state.phase = phase
+        self._concept_plan = concept_plan
+        return self.state
+
+    def _build_pedagogical_state(self) -> _PedagogicalShim:
+        """Construct the lightweight state view for the response tool."""
+
+        return _PedagogicalShim(
+            phase=self.state.phase,
+            plan_index=self.state.plan_index,
+            plan_length=self.state.plan_length,
+        )
+
+    def step(self, action: TutorAction, **kwargs: object) -> EnvironmentTransition[TutorState]:
+        state = self.state
+
+        # Buttons are interpreted as control signals at the environment
+        # level, not as stochastic transitions.
+        control_signal = kwargs.get("control_signal")  # type: ignore[assignment]
+        if isinstance(control_signal, str):
+            state.last_control_signal = control_signal
+
+        state.last_action = action.to_pedagogical_action()
+        state.turn_in_step += 1
+
+        # For MVP we always await a button after emitting a pedagogical
+        # response, except for WAIT_FOR_CONFIRMATION which explicitly
+        # indicates that we are already waiting.
+        if state.last_action == PedagogicalTutorAction.WAIT_FOR_CONFIRMATION:
+            state.awaiting_user_input = True
+        else:
+            state.awaiting_user_input = True
+
+        # Delegate message generation to the response tool.
+        ped_state = self._build_pedagogical_state()
+        context_obs = kwargs.get("context_obs")  # type: ignore[assignment]
+        if not isinstance(context_obs, dict):
+            context_obs = {}
+        response = self._response_tool(
+            user_id=state.user_id,
+            session_id=state.session_id,
+            concept_id=state.concept_id,
+            pedagogical_action=state.last_action,
+            ped_state=ped_state,
+            concept_plan=self._concept_plan,
+            context_obs=context_obs,
+        )
+
+        outputs: Dict[str, object] = dict(response or {})
+
+        return EnvironmentTransition(
+            state=state,
+            outputs=outputs,
+            terminated=False,
+            termination_reason=None,
+        )
+
+    def get_state(self) -> TutorState:
+        return self.state
+
+    def is_terminated(self) -> bool:
+        # Tutor layer is logically non-terminating; higher layers decide
+        # when the episode ends.
+        return False

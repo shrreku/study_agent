@@ -138,3 +138,5 @@ echo "  3. Check logs for 'tutor_config_initialized'"
 echo ""
 echo "Need help? Read ENVIRONMENT_SETUP_GUIDE.md"
 
+
+

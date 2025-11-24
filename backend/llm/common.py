@@ -160,7 +160,7 @@ def get_effective_model_name(model_hint: Optional[str] = None) -> str:
     override = _get_model_override()
     model = model_hint or override or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
     if not model:
-        model = "gpt-4o-mini"
+        model = "anthropic/claude-haiku-4.5"
     return model
 
 
@@ -171,141 +171,141 @@ def _timeout_seconds() -> int:
         return 60
 
 
-def call_json_chat(
-    user_prompt: str,
-    *,
-    default: Dict[str, Any],
-    system_prompt: str = "Return ONLY minified JSON. No markdown.",
-    retry_suffix: Optional[str] = None,
-    max_tokens: Optional[int] = None,
-    model_hint: Optional[str] = None,
-    text_field: Optional[str] = "response",
-    allow_text_fallback: bool = False,
-) -> Dict[str, Any]:
-    """Call an OpenAI-compatible chat completion and parse strict JSON."""
-    mock_mode = os.getenv("USE_LLM_MOCK", "0").lower() in {"1", "true", "yes"}
-    if mock_mode:
-        logging.warning("json_chat_skipped reason=USE_LLM_MOCK_enabled")
-        return default
+# def call_json_chat(
+#     user_prompt: str,
+#     *,
+#     default: Dict[str, Any],
+#     system_prompt: str = "Return ONLY minified JSON. No markdown.",
+#     retry_suffix: Optional[str] = None,
+#     max_tokens: Optional[int] = None,
+#     model_hint: Optional[str] = None,
+#     text_field: Optional[str] = "response",
+#     allow_text_fallback: bool = False,
+# ) -> Dict[str, Any]:
+#     """Call an OpenAI-compatible chat completion and parse strict JSON."""
+#     mock_mode = os.getenv("USE_LLM_MOCK", "0").lower() in {"1", "true", "yes"}
+#     if mock_mode:
+#         logging.warning("json_chat_skipped reason=USE_LLM_MOCK_enabled")
+#         return default
 
-    base_url = _build_base_url()
-    api_key = _resolve_api_key()
-    if not base_url:
-        logging.error("json_chat_skipped reason=base_url_missing env_vars_checked=OPENAI_API_BASE,AIMLAPI_BASE_URL,AIML_BASE_URL,AIMLAPI_URL")
-        return default
-    if not api_key:
-        logging.error("json_chat_skipped reason=api_key_missing env_vars_checked=OPENAI_API_KEY,AIMLAPI_API_KEY,AIML_KEY,AIMLAPI_KEY")
-        return default
+#     base_url = _build_base_url()
+#     api_key = _resolve_api_key()
+#     if not base_url:
+#         logging.error("json_chat_skipped reason=base_url_missing env_vars_checked=OPENAI_API_BASE,AIMLAPI_BASE_URL,AIML_BASE_URL,AIMLAPI_URL")
+#         return default
+#     if not api_key:
+#         logging.error("json_chat_skipped reason=api_key_missing env_vars_checked=OPENAI_API_KEY,AIMLAPI_API_KEY,AIML_KEY,AIMLAPI_KEY")
+#         return default
 
-    # Check thread-local override first, then model_hint, then environment variables
-    model = model_hint or _get_model_override() or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
-    if not model:
-        model = "gpt-4o-mini"
+#     # Check thread-local override first, then model_hint, then environment variables
+#     model = model_hint or _get_model_override() or os.getenv("LLM_MODEL_MINI") or os.getenv("LLM_MODEL_NANO")
+#     if not model:
+#         model = "anthropic/claude-haiku-4.5"
 
-    user_content = (user_prompt or "").strip()
-    if not user_content:
-        user_content = "Provide a valid JSON response for the requested StudyAgent prompt."
+#     user_content = (user_prompt or "").strip()
+#     if not user_content:
+#         user_content = "Provide a valid JSON response for the requested StudyAgent prompt."
 
-    json_mode_enabled = _should_use_json_mode() and model_supports_json_mode(model)
+#     json_mode_enabled = _should_use_json_mode() and model_supports_json_mode(model)
 
-    body: Dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.0,
-        "max_tokens": max_tokens or int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "2000")),
-        "stream": False,
-    }
-    if json_mode_enabled:
-        body["response_format"] = {"type": "json_object"}
+#     body: Dict[str, Any] = {
+#         "model": model,
+#         "messages": [
+#             {"role": "system", "content": system_prompt},
+#             {"role": "user", "content": user_content},
+#         ],
+#         "temperature": 0.0,
+#         "max_tokens": max_tokens or int(os.getenv("LLM_PREVIEW_MAX_TOKENS", "2000")),
+#         "stream": False,
+#     }
+#     if json_mode_enabled:
+#         body["response_format"] = {"type": "json_object"}
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    url = f"{base_url}/chat/completions"
-    logging.info(
-        "json_chat_request model=%s url=%s json_mode=%s max_tokens=%s",
-        model,
-        url,
-        json_mode_enabled,
-        body.get("max_tokens"),
-    )
+#     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+#     url = f"{base_url}/chat/completions"
+#     logging.info(
+#         "json_chat_request model=%s url=%s json_mode=%s max_tokens=%s",
+#         model,
+#         url,
+#         json_mode_enabled,
+#         body.get("max_tokens"),
+#     )
 
-    def _send(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=_timeout_seconds())
-            logging.info("json_chat_response status=%s", resp.status_code)
-        except requests.exceptions.Timeout:
-            logging.error("json_chat_timeout model=%s timeout_secs=%d", model, _timeout_seconds())
-            return None
-        except Exception:
-            logging.exception("json_chat_http_error")
-            return None
-        if not (200 <= resp.status_code < 300):
-            try:
-                body_preview = resp.text[:256]
-            except Exception:
-                body_preview = ""
-            logging.error("json_chat_non_2xx status=%s body=%s", resp.status_code, body_preview)
-            return None
-        try:
-            return resp.json()
-        except Exception:
-            logging.exception("json_chat_invalid_json")
-            return None
+#     def _send(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+#         try:
+#             resp = requests.post(url, headers=headers, json=payload, timeout=_timeout_seconds())
+#             logging.info("json_chat_response status=%s", resp.status_code)
+#         except requests.exceptions.Timeout:
+#             logging.error("json_chat_timeout model=%s timeout_secs=%d", model, _timeout_seconds())
+#             return None
+#         except Exception:
+#             logging.exception("json_chat_http_error")
+#             return None
+#         if not (200 <= resp.status_code < 300):
+#             try:
+#                 body_preview = resp.text[:256]
+#             except Exception:
+#                 body_preview = ""
+#             logging.error("json_chat_non_2xx status=%s body=%s", resp.status_code, body_preview)
+#             return None
+#         try:
+#             return resp.json()
+#         except Exception:
+#             logging.exception("json_chat_invalid_json")
+#             return None
 
-    t0 = time.time()
-    data = _send(body)
-    content = (
-        data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if isinstance(data, dict)
-        else ""
-    )
+#     t0 = time.time()
+#     data = _send(body)
+#     content = (
+#         data.get("choices", [{}])[0].get("message", {}).get("content", "")
+#         if isinstance(data, dict)
+#         else ""
+#     )
 
-    if not content.strip() and retry_suffix:
-        logging.warning("json_chat_empty_first_try; retrying")
-        retry_body = dict(body)
-        retry_body["messages"] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"{user_prompt}\n{retry_suffix}"},
-        ]
-        if json_mode_enabled:
-            retry_body["response_format"] = {"type": "json_object"}
-        else:
-            retry_body.pop("response_format", None)
-        data = _send(retry_body)
-        content = (
-            data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            if isinstance(data, dict)
-            else ""
-        )
+#     if not content.strip() and retry_suffix:
+#         logging.warning("json_chat_empty_first_try; retrying")
+#         retry_body = dict(body)
+#         retry_body["messages"] = [
+#             {"role": "system", "content": system_prompt},
+#             {"role": "user", "content": f"{user_prompt}\n{retry_suffix}"},
+#         ]
+#         if json_mode_enabled:
+#             retry_body["response_format"] = {"type": "json_object"}
+#         else:
+#             retry_body.pop("response_format", None)
+#         data = _send(retry_body)
+#         content = (
+#             data.get("choices", [{}])[0].get("message", {}).get("content", "")
+#             if isinstance(data, dict)
+#             else ""
+#         )
 
-    if not content.strip():
-        logging.error("json_chat_empty_after_retry; returning default")
-        return default
+#     if not content.strip():
+#         logging.error("json_chat_empty_after_retry; returning default")
+#         return default
 
-    blob = ""
-    parsed = None
-    try:
-        blob = _extract_json_blob(content)
-        parsed = json.loads((blob or "").strip())
-    except Exception:
-        try:
-            repaired = _repair_json(blob or "")
-            parsed = json.loads(repaired.strip())
-        except Exception:
-            logging.exception("json_chat_parse_failed")
-            parsed = None
-    if isinstance(parsed, dict):
-        return parsed
+#     blob = ""
+#     parsed = None
+#     try:
+#         blob = _extract_json_blob(content)
+#         parsed = json.loads((blob or "").strip())
+#     except Exception:
+#         try:
+#             repaired = _repair_json(blob or "")
+#             parsed = json.loads(repaired.strip())
+#         except Exception:
+#             logging.exception("json_chat_parse_failed")
+#             parsed = None
+#     if isinstance(parsed, dict):
+#         return parsed
 
-    # If provider ignored JSON mode but returned text, optionally wrap it
-    if allow_text_fallback and content.strip() and text_field:
-        logging.warning("json_chat_wrap_text_fallback")
-        wrapped: Dict[str, Any] = {text_field: content.strip()}
-        if isinstance(default, dict) and "confidence" in default:
-            wrapped["confidence"] = default.get("confidence", 0.5)
-        return wrapped
+#     # If provider ignored JSON mode but returned text, optionally wrap it
+#     if allow_text_fallback and content.strip() and text_field:
+#         logging.warning("json_chat_wrap_text_fallback")
+#         wrapped: Dict[str, Any] = {text_field: content.strip()}
+#         if isinstance(default, dict) and "confidence" in default:
+#             wrapped["confidence"] = default.get("confidence", 0.5)
+#         return wrapped
 
-    logging.warning("json_chat_fallback_to_default")
-    return default
+#     logging.warning("json_chat_fallback_to_default")
+#     return default

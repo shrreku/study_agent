@@ -12,9 +12,11 @@ from api.embeddings import router as embeddings_router
 from api.search import router as search_router
 from api.llm_endpoints import router as llm_router
 from api.agent import router as agent_router
+from api.tutor_mdp import router as tutor_mdp_router
 from api.analytics import router as analytics_router
 from api.metrics_endpoints import router as metrics_router
-from api.rl_tools import router as rl_router
+# Disabled: depends on deleted tutor modules (critic, etc.)
+# from api.rl_tools import router as rl_router
 from api.bench import router as bench_router
 from api.kg import router as kg_router
 from api.auth import router as auth_router
@@ -50,11 +52,13 @@ app.include_router(embeddings_router)
 app.include_router(search_router)
 app.include_router(llm_router)
 app.include_router(agent_router)
+app.include_router(tutor_mdp_router)
 app.include_router(analytics_router)
 app.include_router(metrics_router)
 app.include_router(bench_router)
 app.include_router(kg_router)
-app.include_router(rl_router)
+# Disabled: depends on deleted tutor modules
+# app.include_router(rl_router)
 app.include_router(auth_router)
 
 ## security handled in core.auth; routers declare dependencies

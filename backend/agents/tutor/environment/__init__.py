@@ -1,37 +1,21 @@
-"""
-Clean 3-layer MDP environment for tutor agent.
+"""Tutor Agent 3-layer MDP Environment.
 
-This package provides a hierarchical MDP architecture:
-- SessionEnvironment: Manages overall study session and concept sequencing
-- ConceptEnvironment: Handles learning for a single concept
-- TutorEnvironment: Executes individual pedagogical actions
+This package exposes the main environment entry points used by the tutor
+agent:
 
-Each environment layer is responsible for its own state management,
-action space, and transitions.
+* :class:`EnvironmentOrchestrator` – high-level coordinator
+* :func:`run_environment_turn` – single-turn helper used by the API layer
+* Session / Concept / Tutor environments and their action enums
 """
 
-from .base import BaseEnvironment, EnvironmentState, EnvironmentTransition
+from .orchestrator import EnvironmentOrchestrator, run_environment_turn
 from .session_env import SessionEnvironment, SessionState, SessionAction
 from .concept_env import ConceptEnvironment, ConceptState, ConceptAction
 from .tutor_env import TutorEnvironment, TutorState, TutorAction
-from .context import SessionContext, ConceptContext, TutorContext
-from .policies import (
-    SimpleSessionPolicy,
-    SimpleConceptPolicy,
-    SimpleTutorPolicy,
-    make_session_policy,
-    make_concept_policy,
-    make_tutor_policy,
-)
-from .tools import EnvironmentStateManager, PlanCoordinator, ResponseBuilder
-from .orchestrator import EnvironmentOrchestrator, run_environment_turn
 
 __all__ = [
-    # Base classes
-    "BaseEnvironment",
-    "EnvironmentState",
-    "EnvironmentTransition",
-    # Environments
+    "EnvironmentOrchestrator",
+    "run_environment_turn",
     "SessionEnvironment",
     "SessionState",
     "SessionAction",
@@ -41,22 +25,4 @@ __all__ = [
     "TutorEnvironment",
     "TutorState",
     "TutorAction",
-    # Contexts
-    "SessionContext",
-    "ConceptContext",
-    "TutorContext",
-    # Policies
-    "SimpleSessionPolicy",
-    "SimpleConceptPolicy",
-    "SimpleTutorPolicy",
-    "make_session_policy",
-    "make_concept_policy",
-    "make_tutor_policy",
-    # Tools
-    "EnvironmentStateManager",
-    "PlanCoordinator",
-    "ResponseBuilder",
-    # Orchestrator
-    "EnvironmentOrchestrator",
-    "run_environment_turn",
 ]
