@@ -432,3 +432,8 @@ def _extract_concepts_only(text: str, model: str, url: str, headers: Dict[str, s
     except Exception:
         logging.exception("concepts_only_call_failed")
         return []
+
+
+def call_llm_json(text: str, prompt_override: Optional[str] = None) -> Dict[str, Any]:
+    """Alias for call_llm_for_tagging to satisfy legacy imports."""
+    return call_llm_for_tagging(text, prompt_override)

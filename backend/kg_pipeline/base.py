@@ -95,6 +95,16 @@ def managed_driver() -> Iterator[Any]:
     user = os.getenv("NEO4J_USER", "neo4j")
     password = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
 
+    # Dev convenience: if default docker hostname 'neo4j' is not resolvable, try localhost
+    if "neo4j:7687" in uri:
+        import socket
+        try:
+            socket.gethostbyname("neo4j")
+        except socket.error:
+            # Fallback to localhost
+            logging.info("Neo4j hostname 'neo4j' not found, falling back to 'localhost'")
+            uri = uri.replace("neo4j:7687", "localhost:7687")
+
     try:
         driver = GraphDatabase.driver(uri, auth=(user, password))
         _ensure_constraints(driver)

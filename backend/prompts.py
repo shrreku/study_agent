@@ -188,14 +188,12 @@ def _default_prompts() -> Dict[str, Any]:
 def _active_set_name() -> str:
     """Return the active prompt set name.
 
-    Defaults to 'auto_conversational' so auto-mode tutor prompts are used
-    without requiring PROMPT_SET to be configured. Other sets (e.g.
-    'baseline', 'concise') can still be selected explicitly via PROMPT_SET.
+    Defaults to 'baseline' as requested for MVP.
     """
     override = _get_prompt_set_override()
     if override:
-        return str(override).strip() or "auto_conversational"
-    return os.getenv("PROMPT_SET", "auto_conversational").strip() or "auto_conversational"
+        return str(override).strip() or "baseline"
+    return os.getenv("PROMPT_SET", "baseline").strip() or "baseline"
 
 
 def _prompts_dir() -> str:

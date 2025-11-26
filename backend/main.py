@@ -13,6 +13,7 @@ from api.search import router as search_router
 from api.llm_endpoints import router as llm_router
 from api.agent import router as agent_router
 from api.tutor_mdp import router as tutor_mdp_router
+from api.mdp_router import router as mdp_router
 from api.analytics import router as analytics_router
 from api.metrics_endpoints import router as metrics_router
 # Disabled: depends on deleted tutor modules (critic, etc.)
@@ -53,6 +54,7 @@ app.include_router(search_router)
 app.include_router(llm_router)
 app.include_router(agent_router)
 app.include_router(tutor_mdp_router)
+app.include_router(mdp_router)
 app.include_router(analytics_router)
 app.include_router(metrics_router)
 app.include_router(bench_router)

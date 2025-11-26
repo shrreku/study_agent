@@ -291,8 +291,6 @@ tutor:
 
     Inputs:
     - Student message: {{student_message}}
-    - Classifier intent: {{intent}}
-    - Affect: {{affect}}
     - Focus concept: {{focus_concept}}
     - Current tutor state: {{current_state}}
     - Turn signals:
@@ -320,8 +318,6 @@ tutor:
 
     Inputs:
     - Student message: {{student_message}}
-    - Classifier intent: {{intent}}
-    - Affect: {{affect}}
     - Focus concept: {{focus_concept}}
     - Current tutor state: {{current_state}}
     - Suggested phase for this turn: {{suggested_phase}}
@@ -350,7 +346,6 @@ tutor:
 
     Inputs:
     - Student message: {{student_message}}
-    - Classifier intent: {{intent}}
     - Focus concept: {{focus_concept}}
     - Current tutor state: {{current_state}}
     - Suggested phase: {{suggested_phase}}
@@ -392,8 +387,6 @@ tutor:
 
     Student message: "{{student_message}}"
     Student state:
-    - Intent: {{intent}}
-    - Affect: {{affect}}
     - Focus concept: {{focus_concept}}
     - Level: {{student_level}}
     - Previous action: {{previous_action}}
@@ -494,74 +487,6 @@ tutor:
     Course material examples:
     {{course_examples}}
 
-  pedagogical_mdp_v1: |
-    You are an adaptive tutor executing a single pedagogical action within a structured multi-step learning plan.
-    You are given:
-    - pedagogical_action: one of ["EXPLAIN","ASK_QUESTION","WORKED_EXAMPLE","GUIDED_PRACTICE","DEFINE_TERM","REFLECTION_PROMPT","SUMMARY","QUIZ_MCQ"].
-    - concept_id: the current focus concept.
-    - plan_index: the current step index (0-based) within the SRL concept plan.
-    - plan_length: the total number of steps in the SRL concept plan.
-    - plan_subgoal: a short description of what this step aims to achieve (may be empty).
-    - student_level: coarse level label such as "introductory", "intermediate", or "advanced".
-    - student_message: the student's latest message for this turn (may be empty on control turns).
-    - recent_history: a short text summary of the recent dialogue.
-    General requirements:
-    - Keep the tone warm, encouraging, and concise.
-    - Always respect the pedagogical_action; do NOT switch to a different type of move.
-    - Use plan_subgoal and the step position (plan_index, plan_length) to make the response feel like part of a sequence.
-    - If student_message is non-empty, lightly acknowledge or build on it instead of ignoring it.
-    - Do NOT mention that you are following a "plan" or "MDP"; speak naturally to the student.
-    Behaviour by pedagogical_action:
-    - EXPLAIN:
-      * Give a short explanation of the subgoal for this step.
-      * Break the idea into 2-4 simple sentences.
-      * Optionally end with a short check-in question like "Does this part make sense so far?".
-    - ASK_QUESTION:
-      * Ask ONE short, open question that probes the student's understanding.
-      * The question should be clearly connected to plan_subgoal.
-      * Do not give the answer; wait for the student.
-    - WORKED_EXAMPLE:
-      * Walk through ONE concrete example step by step.
-      * Show the steps in order and briefly explain each.
-      * Keep it short enough to read easily.
-    - GUIDED_PRACTICE:
-      * Present ONE practice question or prompt where the student must supply part of the work.
-      * Give a small hint or scaffold, but do NOT fully solve it for them.
-    - DEFINE_TERM:
-      * Provide a clear, student-friendly definition of the key term for this step.
-      * Optionally follow with ONE very short illustrative phrase or micro-example.
-    - REFLECTION_PROMPT:
-      * Ask the student to briefly reflect on what they understand or how confident they feel.
-      * This must be phrased as ONE question that invites a short answer.
-    - SUMMARY:
-      * Give a brief summary (2-4 sentences) of the main ideas covered so far for this concept.
-      * Optionally end by asking whether they would like to move on or review any part.
-    - QUIZ_MCQ:
-      * Create ONE multiple-choice question that checks the subgoal for this step.
-      * Use 3 or 4 options.
-      * Clearly identify the correct option id.
-      * The question should be appropriate for the given student_level.
-    Output format:
-    - For all actions, you MUST return ONLY minified JSON with keys:
-      {
-        "response": string,       # natural language text to show to the student
-        "ui_mode": string,        # "free_text" or "mcq"
-        "mcq_payload": object or null
-      }
-    - For actions other than QUIZ_MCQ:
-      * ui_mode must be "free_text".
-      * mcq_payload must be null.
-    - For QUIZ_MCQ:
-      * ui_mode must be "mcq".
-      * mcq_payload must be an object with keys:
-        {
-          "question": string,
-          "options": [ {"id": string, "text": string} , ... ],
-          "correct_option_id": string,
-          "explain_option_id": string or null,
-          "difficulty": string or null   # e.g. "easy","medium","hard"
-        }
-    Be strict about the JSON format. Do NOT include explanations outside of the JSON.
 
 tutor_rl:
   critic_score: |
@@ -610,7 +535,6 @@ tutor_rl:
       Student message: {{student_message}}
       Focus concept: {{focus_concept}}
       Action type(s): {{action_types}}
-      Classifier intent: {{intent}}
     Candidates:
     {{candidate_summaries}}
     Respond with strict JSON only.
@@ -622,3 +546,29 @@ tutor_rl:
       "reason": ""
     }
     END_STRICT_JSON
+  srl_concept_plan_v1: |
+    You are an expert pedagogical planner. Create a step-by-step learning plan for a specific concept.
+    
+    Goal: Guide the student to mastery of '{{concept_id}}'.
+    
+    Inputs:
+    - Concept: {{concept_id}}
+    - Current Mastery: {{current_mastery}}
+    - Target Mastery: {{target_mastery}}
+    - Mastery Gap: {{mastery_gap}}
+    - Context: {{context_obs}}
+    
+    Return ONLY JSON with keys:
+    {
+      "plan_id": string,
+      "concept_id": string,
+      "target_mastery": number,
+      "steps": [
+        {
+          "step_type": "introduction|explanation|example|practice|reflection",
+          "instruction": string,
+          "subgoal": string
+        }
+      ],
+      "source": "concept_planner_v1"
+    }
