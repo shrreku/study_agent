@@ -17,6 +17,84 @@ class RAGTools:
     def __init__(self):
         pass
 
+    def get_concepts_for_resources(self, resource_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch all concepts linked to the given resource IDs via Chunks.
+        Returns list of dicts with concept 'id' (canonical) and 'name' (display).
+        """
+        if not managed_driver:
+            logger.warning("RAG tools unavailable: managed_driver import failed")
+            return []
+            
+        try:
+            with managed_driver() as driver:
+                if not driver:
+                    return []
+                    
+                query = """
+                MATCH (c:Chunk)-[r]->(con:Concept)
+                WHERE r.resource_id IN $resource_ids
+                RETURN con.canonical_name as id, con.display_name as name, min(c.id) as first_chunk_id
+                """
+                
+                with driver.session() as session:
+                    result = session.run(query, resource_ids=resource_ids)
+                    return [record.data() for record in result]
+        except Exception as e:
+            logger.error(f"get_concepts_for_resources failed: {e}")
+            return []
+
+    def get_concept_dependencies(self, concept_ids: List[str]) -> List[Dict[str, str]]:
+        """
+        Fetch PREREQUISITE_OF relationships where both start and end concepts are in the provided list.
+        Returns list of {'from': concept_id, 'to': concept_id}.
+        """
+        if not managed_driver:
+            return []
+            
+        try:
+            with managed_driver() as driver:
+                if not driver:
+                    return []
+                    
+                query = """
+                MATCH (c1:Concept)-[r:PREREQUISITE_OF]->(c2:Concept)
+                WHERE c1.canonical_name IN $concept_ids AND c2.canonical_name IN $concept_ids
+                RETURN c1.canonical_name as from, c2.canonical_name as to
+                """
+                
+                with driver.session() as session:
+                    result = session.run(query, concept_ids=concept_ids)
+                    return [record.data() for record in result]
+        except Exception as e:
+            logger.error(f"get_concept_dependencies failed: {e}")
+            return []
+
+    def get_concept_details(self, concept_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch details (name, etc.) for a specific list of concept IDs.
+        """
+        if not managed_driver:
+            return []
+            
+        try:
+            with managed_driver() as driver:
+                if not driver:
+                    return []
+                    
+                query = """
+                MATCH (con:Concept)
+                WHERE con.canonical_name IN $concept_ids
+                RETURN con.canonical_name as id, con.display_name as name
+                """
+                
+                with driver.session() as session:
+                    result = session.run(query, concept_ids=concept_ids)
+                    return [record.data() for record in result]
+        except Exception as e:
+            logger.error(f"get_concept_details failed: {e}")
+            return []
+
     def search_graph_data(self, concept: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Raw graph search returning list of dicts."""
         if not managed_driver:
@@ -32,8 +110,8 @@ class RAGTools:
                 
                 query = """
                 MATCH (c:Concept)-[r]-(related:Concept)
-                WHERE c.name =~ '(?i)' + $concept
-                RETURN related.name AS name, type(r) AS relationship, r.weight AS weight
+                WHERE c.display_name =~ '(?i)' + $concept
+                RETURN related.display_name AS name, type(r) AS relationship, r.weight AS weight
                 ORDER BY weight DESC
                 LIMIT $limit
                 """

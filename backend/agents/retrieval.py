@@ -32,12 +32,7 @@ def recompute_search_tsv_for_all_chunks(batch_size: int = 500):
         return 0
     RealDictCursor = _get_real_dict_cursor()
 
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "postgres")
-    host = os.getenv("POSTGRES_HOST", "postgres")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    db = os.getenv("POSTGRES_DB", "app")
-    dsn = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    dsn = get_db_dsn()
 
     updated = 0
     conn = psycopg2.connect(dsn)
@@ -104,6 +99,18 @@ def get_db_dsn() -> str:
     password = os.getenv("POSTGRES_PASSWORD", "postgres")
     host = os.getenv("POSTGRES_HOST", "postgres")
     port = os.getenv("POSTGRES_PORT", "5432")
+    
+    # Dev convenience: if host is 'postgres' and not resolvable, fallback to localhost:5433
+    if host == "postgres":
+        import socket
+        try:
+            socket.gethostbyname("postgres")
+        except socket.error:
+            logging.info("Postgres hostname 'postgres' not found, falling back to 'localhost:5433'")
+            host = "localhost"
+            if port == "5432":
+                port = "5433"
+
     db = os.getenv("POSTGRES_DB", "app")
     return f"postgresql://{user}:{password}@{host}:{port}/{db}"
 

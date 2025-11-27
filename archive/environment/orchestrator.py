@@ -10,6 +10,7 @@ from ..mdp.tools_factory import (
     make_concept_planner_tool,
     make_pedagogical_response_tool,
 )
+from ..mdp.input_analysis import InputAnalyzer
 from .session_env import SessionEnvironment, SessionAction
 from .concept_env import ConceptEnvironment, ConceptAction
 from .tutor_env import TutorEnvironment, TutorAction
@@ -36,6 +37,7 @@ class EnvironmentOrchestrator:
         concept_planner = make_concept_planner_tool(config)
         self.plan_coordinator = PlanCoordinator(session_planner, concept_planner)
         self.response_tool = make_pedagogical_response_tool(config)
+        self.input_analyzer = InputAnalyzer()
 
     def _normalize_button_signal(self, payload: Dict[str, Any]) -> Optional[str]:
         """Extract a normalized control signal from the payload.
@@ -244,6 +246,27 @@ class EnvironmentOrchestrator:
             )
             c_state = concept_env.get_state()
 
+        # --- Conversational Analysis ---
+        analysis_feedback = None
+        if not control_signal and ctx.message and c_state.concept_plan and c_state.concept_plan.steps:
+             try:
+                 idx = c_state.current_step_index
+                 if 0 <= idx < len(c_state.concept_plan.steps):
+                     current_step_obj = c_state.concept_plan.steps[idx]
+                     analysis = self.input_analyzer.analyze(ctx.message, current_step_obj)
+                     
+                     intent = analysis.get("intent")
+                     correctness = analysis.get("correctness")
+                     analysis_feedback = analysis.get("feedback")
+                     
+                     logger.info("input_analysis_result", extra={"intent": intent, "correctness": correctness})
+                     
+                     if intent == "answer" and correctness == "correct":
+                         control_signal = "continue" # Virtual button click
+                     # Else stay on step
+             except Exception as e:
+                 logger.error(f"Analysis failed in run_turn: {e}")
+
         # Concept decision: button click → advance, otherwise execute current step.
         if control_signal:
             concept_action = ConceptAction.ADVANCE_STEP
@@ -294,6 +317,7 @@ class EnvironmentOrchestrator:
             control_signal=control_signal,
             context_obs={
                 "student_message": ctx.message,
+                "feedback_override": analysis_feedback,
             },
         )
         logger.info(

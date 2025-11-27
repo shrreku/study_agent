@@ -17,7 +17,11 @@ class ResponseGenerator:
                                       step_content: str, 
                                       student_history: list,
                                       plan_index: int = 0,
-                                      plan_length: int = 1) -> Dict[str, Any]:
+                                      plan_length: int = 1,
+                                      feedback_override: Optional[str] = None,
+                                      force_reply_mode: bool = False,
+                                      student_mastery: float = 0.0,
+                                      retrieval_query: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate a response using specific prompts from baseline.yaml.
         """
@@ -33,19 +37,53 @@ class ResponseGenerator:
         }
         
         prompt_key = key_map.get(step_pedagogy.lower(), "tutor.explain")
+
+        # If force_reply_mode, we are replying to a user query/action off-plan
+        # We use tutor.explain as a generic "talk to student" prompt
+        if force_reply_mode:
+            prompt_key = "tutor.explain"
+
         template = prompts.get(prompt_key)
-        
+
         if not template:
-             return {"content": f"Error: Prompt {prompt_key} not found.", "error": "missing_prompt"}
+            return {"content": f"Error: Prompt {prompt_key} not found.", "error": "missing_prompt"}
 
         # Prepare Context
-        # Combine step content, plan progress, and RAG
-        combined_context = f"Lesson Step {plan_index+1} of {plan_length}: {step_content}"
+        # We format context into clearly labeled sections so prompts can
+        # treat them as internal hints + reference material, not prior
+        # conversational turns.
+        step_label = f"PLAN_STEP_HINT (step {plan_index+1} of {plan_length}):"
+        step_text = step_content or "(no specific hint provided)"
+
+        combined_lines = [f"{step_label} {step_text}"]
         
-        if len(combined_context) < 100:
-             rag_context = self.rag.search_context(step_concept)
-             if rag_context:
-                 combined_context += f"\n\nReference Material:\n{rag_context}"
+        # Inject mastery info
+        combined_lines.append(f"[STUDENT MASTERY]: {student_mastery:.2f} (0.0=novice, 1.0=expert)")
+
+        if feedback_override:
+            # feedback_override is an internal directive from the analyzer
+            # indicating how the next response should behave.
+            combined_lines.append(f"[INSTRUCTION]: {feedback_override}")
+
+        # Smart RAG Query Strategy
+        # 1. If retrieval_query is explicitly provided (from input analysis), use it.
+        # 2. Else, construct a query from concept + pedagogy (e.g. "convection example")
+        # 3. Fallback to just concept
+        
+        final_query = retrieval_query
+        if not final_query:
+            # Fallback strategy
+            if step_pedagogy and step_pedagogy.lower() not in ["explain", "intro"]:
+                 final_query = f"{step_concept} {step_pedagogy}"
+            else:
+                 final_query = step_concept
+
+        rag_context = self.rag.search_context(final_query)
+        if rag_context:
+            combined_lines.append(f"REFERENCE_MATERIAL (searched for: '{final_query}'):")
+            combined_lines.append(str(rag_context))
+
+        combined_context = "\n".join(combined_lines)
 
         # Format student history
         history_str = "None"

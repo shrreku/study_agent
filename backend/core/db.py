@@ -7,7 +7,6 @@ Exposes:
 from __future__ import annotations
 import os
 import logging
-import psycopg2
 
 
 def get_db_conn():
@@ -17,8 +16,22 @@ def get_db_conn():
         password = os.getenv("POSTGRES_PASSWORD", "postgres")
         host = os.getenv("POSTGRES_HOST", "postgres")
         port = os.getenv("POSTGRES_PORT", "5432")
+        
+        # Dev convenience: if host is 'postgres' and not resolvable, fallback to localhost:5433
+        if host == "postgres":
+            import socket
+            try:
+                socket.gethostbyname("postgres")
+            except socket.error:
+                logging.info("Postgres hostname 'postgres' not found, falling back to 'localhost:5433'")
+                host = "localhost"
+                if port == "5432":
+                    port = "5433"
+        
         db = os.getenv("POSTGRES_DB", "app")
         dsn = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    
+    import psycopg2
     conn = psycopg2.connect(dsn)
     try:
         # Optional: register pgvector adapter if available
@@ -235,7 +248,10 @@ ALTER TABLE tutor_turn
   ADD COLUMN IF NOT EXISTS retrieval_metadata JSONB,
   ADD COLUMN IF NOT EXISTS policy_trace JSONB,
   ADD COLUMN IF NOT EXISTS candidates JSONB,
-  ADD COLUMN IF NOT EXISTS preference_rating JSONB;
+  ADD COLUMN IF NOT EXISTS preference_rating JSONB,
+  ADD COLUMN IF NOT EXISTS mastery_before NUMERIC,
+  ADD COLUMN IF NOT EXISTS mastery_after NUMERIC,
+  ADD COLUMN IF NOT EXISTS mastery_delta NUMERIC;
 """,
         """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tutor_turn_session_turn_index ON tutor_turn (session_id, turn_index);

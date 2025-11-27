@@ -5,6 +5,7 @@ from .daily_quiz import daily_quiz_agent
 from .doubt import doubt_agent
 from .analysis import analysis_agent
 from .tutor.agent import tutor_agent
+from .tutor_mdp import tutor_mdp_agent
 
 
 def orchestrator_dispatch(agent_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -26,6 +27,7 @@ def orchestrator_dispatch(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
         # pure control turns (step_control, mcq_answer, confirmed_action)
         # can be sent without free-text.
         "tutor": {"required": ["user_id"]},
+        "tutor-mdp": {"required": ["user_id"]},
         "mock": {"required": []},
     }
 
@@ -38,7 +40,7 @@ def orchestrator_dispatch(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
         if missing:
             raise ValueError(f"invalid payload, missing keys: {missing}")
 
-    if agent_name not in {"mock", "study-plan", "daily-quiz", "doubt", "analysis", "tutor"}:
+    if agent_name not in {"mock", "study-plan", "daily-quiz", "doubt", "analysis", "tutor", "tutor-mdp"}:
         raise ValueError(f"unknown agent: {agent_name}")
 
     # run validation (will raise ValueError on missing required keys)
@@ -56,6 +58,8 @@ def orchestrator_dispatch(agent_name: str, payload: Dict[str, Any]) -> Dict[str,
         return analysis_agent(payload)
     if agent_name == "tutor":
         return tutor_agent(payload)
+    if agent_name == "tutor-mdp":
+        return tutor_mdp_agent(payload)
     # unreachable due to check above
     raise ValueError(f"unknown agent: {agent_name}")
 

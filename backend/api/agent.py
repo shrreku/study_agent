@@ -57,6 +57,11 @@ async def agent_endpoint(agent_name: str, body: AgentRequest, token: str = Depen
             alias_q = payload.get("question_text") or payload.get("q")
             if alias_q:
                 payload["question"] = alias_q
+        
+        # For tutor-mdp agent, add mock user_id if not present (for testing without auth)
+        if agent_name == "tutor-mdp" and not payload.get("user_id"):
+            payload["user_id"] = "test_user"
+        
         result = orchestrator_dispatch(agent_name, payload)
         return result
     except ValueError as ve:

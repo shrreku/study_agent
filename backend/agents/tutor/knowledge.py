@@ -20,7 +20,7 @@ def fetch_mastery_map(cursor, user_id: str) -> Dict[str, Any]:
     """
     cursor.execute(
         """
-        SELECT concept_id, mastery, last_updated
+        SELECT concept AS concept_id, mastery, last_seen AS last_updated
         FROM user_concept_mastery
         WHERE user_id = %s::uuid
         """,

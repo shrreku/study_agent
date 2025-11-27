@@ -52,7 +52,8 @@ export function SecondaryButton(props) {
   )
 }
 
-export function Card({ title, subtitle, children, style, footer, ...rest }) {
+export function Card(props) {
+  const { title, subtitle, children, style, footer, ...rest } = props
   return (
     <section
       {...rest}

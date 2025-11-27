@@ -164,6 +164,9 @@ export default function DashboardPage() {
             <SecondaryButton onClick={() => (window.location.href = '/tutor')}>
               General tutor
             </SecondaryButton>
+            <SecondaryButton as="a" href="/session-plan">
+              Session planner (MDP)
+            </SecondaryButton>
           </div>
         </Card>
       </div>
