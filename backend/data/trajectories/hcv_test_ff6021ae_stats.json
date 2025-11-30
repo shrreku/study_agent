@@ -1,0 +1,14 @@
+{
+  "total_transitions": 30,
+  "total_sessions": 1,
+  "avg_reward": 0.30499999999999994,
+  "min_reward": 0.305,
+  "max_reward": 0.305,
+  "avg_mastery_delta": 0.0,
+  "positive_mastery_count": 0,
+  "action_counts": {
+    "advance": 30
+  },
+  "leakage_count": 0,
+  "scaffolding_count": 0
+}

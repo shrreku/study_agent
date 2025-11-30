@@ -20,6 +20,7 @@ from api.bench import router as bench_router
 from api.kg import router as kg_router
 from api.auth import router as auth_router
 from api.mdp_test import router as mdp_test_router
+from api.mdp_v2 import router as mdp_v2_router
 from api.session import router as session_router
 from core.db import ensure_schema
 from kg_pipeline import ensure_neo4j_constraints
@@ -61,6 +62,7 @@ app.include_router(kg_router)
 # app.include_router(rl_router)
 app.include_router(auth_router)
 app.include_router(mdp_test_router)
+app.include_router(mdp_v2_router)  # New MDP v2 with transition logging
 app.include_router(session_router)
 
 ## security handled in core.auth; routers declare dependencies

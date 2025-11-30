@@ -1,0 +1,18 @@
+{
+  "total_transitions": 30,
+  "total_sessions": 1,
+  "avg_reward": 0.43233333333333346,
+  "min_reward": -0.4865,
+  "max_reward": 0.5775000000000001,
+  "avg_mastery_delta": 0.024499999999999997,
+  "positive_mastery_count": 11,
+  "action_counts": {
+    "socratic_question": 12,
+    "reflect": 6,
+    "use_analogy": 9,
+    "explain": 1,
+    "challenge": 2
+  },
+  "leakage_count": 1,
+  "scaffolding_count": 27
+}

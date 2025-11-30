@@ -248,7 +248,8 @@ export default function SessionPlanPage() {
     setPlanError("");
 
     try {
-      const res = await fetch(`${API_BASE}/api/mdp/start_from_plan`, {
+      // Use v2 API for new sessions with transition logging
+      const res = await fetch(`${API_BASE}/api/mdp/v2/start_from_plan`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -258,7 +259,8 @@ export default function SessionPlanPage() {
           session_plan: plan,
           // TODO: Get actual user ID from token or context. 
           // Using a known valid UUID for testing to satisfy DB constraints.
-          student_id: "133747cc-5c82-43e2-9d37-644eaa02eaee", 
+          student_id: "133747cc-5c82-43e2-9d37-644eaa02eaee",
+          use_llm_policy: false, // Use rule-based by default
         }),
       });
       if (!res.ok) {

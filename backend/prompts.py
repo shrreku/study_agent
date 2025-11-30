@@ -78,36 +78,36 @@ def _default_prompts() -> Dict[str, Any]:
                 "Last concept: {{last_concept}}"
             ),
             "explain": (
-                "You are an adaptive tutor explaining a concept using only provided context.\n"
+                "You are an adaptive tutor explaining a concept.\n"
                 "Return ONLY JSON: {\"response\": string, \"confidence\": number}.\n"
-                "If context insufficient respond with: Let's review that from your materials first.\n"
+                "ALWAYS provide a useful explanation using your knowledge.\n"
                 "Concept: {{concept}}\n"
                 "Level: {{level}}\n"
                 "Context:\n{{context}}"
             ),
             "ask": (
-                "Generate ONE grounded formative question to check the student's understanding of the concept.\n"
+                "Generate ONE formative question to check the student's understanding of the concept.\n"
                 "Do NOT just summarize the text. Do NOT just quote the text.\n"
                 "Do NOT return a snippet. You must SYNTHESIZE a question.\n"
                 "Ask a question that requires the student to apply or explain the concept in their own words.\n"
                 "Return ONLY JSON: {\"question\": string, \"answer\": string, \"confidence\": number, \"options\": [..]}.\n"
-                "If context insufficient respond with: Let's review that from your materials first.\n"
+                "ALWAYS generate a relevant question using your knowledge.\n"
                 "Concept: {{concept}}\n"
                 "Level: {{level}}\n"
                 "Context:\n{{context}}"
             ),
             "hint": (
-                "Provide a grounded hint without giving the full answer.\n"
+                "Provide a hint without giving the full answer.\n"
                 "Return ONLY JSON: {\"response\": string, \"confidence\": number}.\n"
-                "If context insufficient respond with: Let's review that from your materials first.\n"
+                "ALWAYS provide a helpful hint using your knowledge.\n"
                 "Concept: {{concept}}\n"
                 "Level: {{level}}\n"
                 "Context:\n{{context}}"
             ),
             "reflect": (
-                "Lead a brief reflection grounded in context.\n"
+                "Lead a brief reflection on the concept.\n"
                 "Return ONLY JSON: {\"response\": string, \"confidence\": number}.\n"
-                "If context insufficient respond with: Let's review that from your materials first.\n"
+                "ALWAYS provide a thoughtful reflection using your knowledge.\n"
                 "Concept: {{concept}}\n"
                 "Level: {{level}}\n"
                 "Context:\n{{context}}"

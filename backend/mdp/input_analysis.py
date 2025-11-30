@@ -54,13 +54,39 @@ class InputAnalyzer:
             
             response["correctness_score"] = score
             
-            # Default retrieval query if missing
-            if not response.get("retrieval_query"):
-                # If reply/question, defaults to message or concept
-                # But we leave it empty to let downstream decide
-                response["retrieval_query"] = None
+            # Handle retrieval_queries (new array format)
+            # Backward compatible: also check for old "retrieval_query" string format
+            queries = response.get("retrieval_queries", [])
+            if not queries:
+                # Fallback to old single query format
+                old_query = response.get("retrieval_query")
+                if old_query and isinstance(old_query, str):
+                    # Split long queries into shorter ones
+                    words = old_query.split()
+                    if len(words) > 3:
+                        # Break into 2-3 word chunks
+                        queries = [" ".join(words[i:i+2]) for i in range(0, min(6, len(words)), 2)]
+                    else:
+                        queries = [old_query]
             
-            logger.info(f"Analysis result: {response}")
+            # Validate and clean queries (2-3 words max each)
+            clean_queries = []
+            for q in queries[:3]:  # Max 3 queries
+                if isinstance(q, str):
+                    q = q.strip()
+                    words = q.split()
+                    if 1 <= len(words) <= 3:
+                        clean_queries.append(q)
+                    elif len(words) > 3:
+                        # Truncate to first 2-3 words
+                        clean_queries.append(" ".join(words[:2]))
+                        logger.warning(f"Truncated long RAG query: '{q}' -> '{' '.join(words[:2])}'")
+            
+            response["retrieval_queries"] = clean_queries
+            
+            logger.info(f"Analysis result: intent={response.get('intent')}, " 
+                       f"correctness={response.get('correctness')}, "
+                       f"queries={clean_queries}")
             return response
         except Exception as e:
             logger.error(f"Input analysis failed: {e}")

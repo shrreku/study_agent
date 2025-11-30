@@ -63,7 +63,7 @@ class TestSessionPlanner(unittest.TestCase):
         self.planner.rag.get_concepts_for_resources.return_value = concepts
         self.planner.rag.get_concept_dependencies.return_value = deps
         
-        plan = self.planner.generate_plan(['res1'], self.profile)
+        plan = self.planner.generate_plan(self.profile, ['res1'])
         
         self.assertEqual([s.concept_id for s in plan.steps], ['A', 'C', 'B'])
 

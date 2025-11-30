@@ -9,11 +9,11 @@ from llm.common import call_json_chat
 logger = logging.getLogger(__name__)
 
 class LLMClient:
-    def __init__(self):
-        self.base_url = os.getenv("OPENAI_API_BASE")
+    def __init__(self, model_override: Optional[str] = None, base_url_override: Optional[str] = None):
+        self.base_url = base_url_override or os.getenv("OPENAI_API_BASE")
         self.api_key = os.getenv("OPENAI_API_KEY")
-        # Prefer mini model for speed/cost in this MVP
-        self.model = os.getenv("LLM_MODEL_MINI") or "gpt-3.5-turbo"
+        # Allow model override, or use env var, or default
+        self.model = model_override or os.getenv("LLM_MODEL_MINI") or "gpt-3.5-turbo"
 
         if self.base_url and not self.base_url.endswith("/v1"):
             self.base_url = self.base_url.rstrip("/") + "/v1"

@@ -1,0 +1,27 @@
+{
+  "timestamp": 1764300138,
+  "prefix": "hcv_test_1764300138",
+  "models": {
+    "tutor": "openai/gpt-4o-mini",
+    "student": "google/gemini-2.5-flash-lite",
+    "analyzer": "google/gemini-2.5-flash-lite",
+    "planner": "openai/gpt-5-mini-2025-08-07"
+  },
+  "config": {
+    "concepts": [],
+    "resources": [
+      "885c02c6-7c91-46f8-a0b8-4ff359731e16"
+    ],
+    "students_per_concept": 1,
+    "learner_types": [
+      "average"
+    ],
+    "max_turns_per_concept": 3,
+    "target_mastery": 0.8,
+    "use_llm_students": true
+  },
+  "stats": {
+    "sessions": 1,
+    "transitions": 30
+  }
+}

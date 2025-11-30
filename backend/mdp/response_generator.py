@@ -65,22 +65,38 @@ class ResponseGenerator:
             # indicating how the next response should behave.
             combined_lines.append(f"[INSTRUCTION]: {feedback_override}")
 
-        # Smart RAG Query Strategy
+        # Smart RAG Query Strategy with multi-query support
         # 1. If retrieval_query is explicitly provided (from input analysis), use it.
-        # 2. Else, construct a query from concept + pedagogy (e.g. "convection example")
+        # 2. Else, construct 2-3 word queries from concept + pedagogy
         # 3. Fallback to just concept
         
-        final_query = retrieval_query
-        if not final_query:
-            # Fallback strategy
+        queries = []
+        if retrieval_query:
+            # If it's a list, use it directly
+            if isinstance(retrieval_query, list):
+                queries = retrieval_query
+            elif isinstance(retrieval_query, str):
+                # Split long queries into 2-3 word chunks
+                words = retrieval_query.split()
+                if len(words) > 3:
+                    queries = [" ".join(words[i:i+2]) for i in range(0, min(6, len(words)), 2)]
+                else:
+                    queries = [retrieval_query]
+        
+        if not queries:
+            # Fallback strategy: generate 2-3 word queries
+            queries = [step_concept]
             if step_pedagogy and step_pedagogy.lower() not in ["explain", "intro"]:
-                 final_query = f"{step_concept} {step_pedagogy}"
-            else:
-                 final_query = step_concept
+                queries.append(f"{step_concept} {step_pedagogy}")
 
-        rag_context = self.rag.search_context(final_query)
+        # Use multi-query RAG for better coverage
+        if len(queries) > 1:
+            rag_context = self.rag.search_multi_query(queries, limit_per_query=2)
+        else:
+            rag_context = self.rag.search_context(queries[0] if queries else step_concept)
+        
         if rag_context:
-            combined_lines.append(f"REFERENCE_MATERIAL (searched for: '{final_query}'):")
+            combined_lines.append(f"REFERENCE_MATERIAL (searched for: {queries}):")
             combined_lines.append(str(rag_context))
 
         combined_context = "\n".join(combined_lines)
