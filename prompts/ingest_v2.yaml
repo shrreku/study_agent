@@ -1,0 +1,435 @@
+# Ingestion Pipeline v2 Prompts
+# Ontology-aware extraction for multi-book knowledge graphs
+
+# =============================================================================
+# Page Structure Extraction (for vision backends)
+# =============================================================================
+
+page_structure:
+  extract: |
+    Analyze this textbook page and extract its structure as JSON.
+
+    Return:
+    {
+      "blocks": [
+        {
+          "type": "heading_1|heading_2|heading_3|paragraph|equation|table|figure|caption|list_item|code",
+          "text": "extracted text",
+          "latex": "LaTeX formula if equation, else null",
+          "is_definition": false
+        }
+      ],
+      "chapter_info": {
+        "number": "3" or null,
+        "title": "Chapter title" or null
+      },
+      "section_info": {
+        "number": "3.2" or null,
+        "title": "Section title" or null,
+        "level": 1-4
+      },
+      "is_scanned": false,
+      "has_complex_layout": false
+    }
+
+    Guidelines:
+    - Preserve ALL mathematical notation as LaTeX
+    - heading_1 = chapter, heading_2 = section, heading_3 = subsection
+    - Mark definitions explicitly (is_definition: true)
+    - For tables, include markdown representation in text
+    - Detect multi-column layouts (has_complex_layout)
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Ontology-Aware Concept Extraction
+# =============================================================================
+
+concepts:
+  extract_unified: |
+    You are an expert in {{domain}} analyzing educational content for knowledge graph construction.
+    
+    Extract concepts and relationships from this text chunk with HIGH PRECISION.
+    We prefer FEWER, HIGH-QUALITY extractions over many noisy ones.
+
+    === TEXT ===
+    {{text}}
+
+    === CONTEXT ===
+    Chapter: {{chapter_title}}
+    Section: {{section_title}}
+    Section Path: {{section_path}}
+    Previous chunk summary: {{prev_chunk_summary}}
+
+    === KNOWN CONCEPTS (prefer mapping to these) ===
+    {{known_concepts}}
+
+    === EXTRACTION SCHEMA ===
+    Return JSON:
+    {
+      "main_concepts": [
+        {
+          "name": "Concept Name",
+          "concept_type": "core_concept|phenomenon|law|principle|theorem|physical_quantity|equation|constant|method|technique|model|system|component|material|device|application|definition",
+          "confidence": 0.9,
+          "definition_text": "If this chunk defines it, include the definition text",
+          "maps_to_known": "canonical_name of known concept if it matches one, else null"
+        }
+      ],
+      "mentioned_concepts": [
+        {
+          "name": "Another Concept",
+          "concept_type": "physical_quantity",
+          "confidence": 0.7
+        }
+      ],
+      "local_relations": [
+        {
+          "source": "concept_a",
+          "target": "concept_b", 
+          "type": "PREREQUISITE_OF|IS_A|PART_OF|CAUSES|DERIVES_FROM|EQUIVALENT_TO|APPLIES_TO|MEASURES|USES",
+          "confidence": 0.8,
+          "evidence": "brief quote supporting this relation"
+        }
+      ],
+      "formulas": [
+        {
+          "latex": "q = -k \\nabla T",
+          "label": "Fourier's Law",
+          "defines_concept": "heat flux",
+          "uses_concepts": ["thermal conductivity", "temperature gradient"],
+          "variables": [
+            {"symbol": "q", "meaning": "heat flux", "units": "W/m²"},
+            {"symbol": "k", "meaning": "thermal conductivity", "units": "W/(m·K)"},
+            {"symbol": "T", "meaning": "temperature", "units": "K"}
+          ]
+        }
+      ],
+      "pedagogy_role": "definition|explanation|example|derivation|proof|problem|summary|introduction",
+      "difficulty": "introductory|intermediate|advanced",
+      "cognitive_level": "remember|understand|apply|analyze|evaluate|create",
+      "domain": "specific domain like thermodynamics, mechanics, etc",
+      "topic": "specific topic",
+      "subtopic": "specific subtopic"
+    }
+
+    === RULES ===
+    1. main_concepts: MAX 3 concepts that this chunk PRIMARILY teaches/defines
+    2. mentioned_concepts: Other concepts referenced but not the focus (max 10)
+    3. local_relations: Only relations with clear textual evidence (max 5)
+    4. Prefer mapping to known_concepts over creating new ones
+    5. confidence: 0.9+ for explicit definitions, 0.7-0.9 for clear mentions, <0.7 for inferred
+    6. For STEM: carefully distinguish physical_quantity vs phenomenon vs law
+    7. Skip generic terms (e.g., "example", "equation", "method" without specifics)
+
+    Return ONLY valid JSON.
+
+  extract_minimal: |
+    Extract key concepts from this educational text. Be precise and conservative.
+
+    Text: {{text}}
+    Section: {{section_title}}
+
+    Return JSON:
+    {
+      "concepts": ["concept1", "concept2"],
+      "pedagogy_role": "definition|explanation|example|derivation|problem",
+      "difficulty": "introductory|intermediate|advanced"
+    }
+
+    Rules:
+    - Max 5 concepts
+    - Only include domain-specific technical terms
+    - Skip generic words like "example", "method", "system" unless specific
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Prerequisite Inference
+# =============================================================================
+
+prerequisites:
+  build_from_concepts: |
+    You are building a prerequisite graph for {{domain}} concepts from textbooks.
+    
+    Given these concepts extracted from educational materials, identify prerequisite relationships.
+    A PREREQUISITE relationship means: "To understand B, you should first understand A"
+
+    === CONCEPTS ===
+    {{concepts_list}}
+
+    === RULES ===
+    1. Only create PREREQUISITE edges where the dependency is clear and pedagogically meaningful
+    2. Avoid circular dependencies
+    3. Prefer transitive reduction (if A→B and B→C, don't add A→C)
+    4. Consider: earlier page appearance, lower difficulty, foundational vs advanced
+    5. confidence >= 0.8 for obvious prerequisites, 0.6-0.8 for likely ones
+
+    Return JSON:
+    {
+      "prerequisites": [
+        {
+          "from": "prerequisite concept (canonical)",
+          "to": "dependent concept (canonical)",
+          "confidence": 0.85,
+          "reason": "brief explanation"
+        }
+      ],
+      "learning_order": ["concept1", "concept2", "concept3"]
+    }
+
+    Return ONLY valid JSON.
+
+  infer_from_context: |
+    Given this chunk that discusses {{target_concept}}, identify what prerequisite concepts
+    a student should already understand.
+
+    Text: {{text}}
+    Target concept: {{target_concept}}
+
+    Return JSON:
+    {
+      "prerequisites": [
+        {
+          "concept": "prerequisite concept name",
+          "confidence": 0.8,
+          "evidence": "quote or reason from text"
+        }
+      ]
+    }
+
+    Rules:
+    - Only include concepts explicitly referenced or clearly assumed
+    - Max 5 prerequisites per chunk
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Ontology Building (Cross-book)
+# =============================================================================
+
+ontology:
+  cluster_concepts: |
+    You are consolidating concepts from multiple textbooks into a canonical ontology.
+
+    These concept names may refer to the same underlying concept:
+    {{concept_cluster}}
+
+    Sample occurrences:
+    {{sample_occurrences}}
+
+    Decide:
+    1. Do these refer to the SAME concept? (yes/no/partial)
+    2. If yes, what is the canonical name?
+    3. What concept_type best fits?
+    4. Provide a concise canonical definition.
+
+    Return JSON:
+    {
+      "same_concept": true,
+      "canonical_name": "preferred name",
+      "display_name": "Display Name",
+      "concept_type": "core_concept|phenomenon|law|...",
+      "definition": "Concise canonical definition (1-2 sentences)",
+      "aliases": ["alias1", "alias2"],
+      "confidence": 0.9,
+      "notes": "any disambiguation notes"
+    }
+
+    Return ONLY valid JSON.
+
+  build_hierarchy: |
+    Given these domain concepts, build IS_A and PART_OF hierarchies.
+
+    Concepts:
+    {{concepts_with_types}}
+
+    Return JSON:
+    {
+      "is_a_edges": [
+        {"child": "forced convection", "parent": "convection", "confidence": 0.95}
+      ],
+      "part_of_edges": [
+        {"part": "boundary layer", "whole": "flow system", "confidence": 0.8}
+      ]
+    }
+
+    Rules:
+    - IS_A: "X is a type/kind of Y"
+    - PART_OF: "X is a component/part of Y"
+    - Only high-confidence edges
+    - Avoid redundant edges
+
+    Return ONLY valid JSON.
+
+  generate_definition: |
+    Generate a canonical definition for this concept based on how it's used across textbooks.
+
+    Concept: {{concept_name}}
+    Type: {{concept_type}}
+    Domain: {{domain}}
+
+    Sample definitions/explanations from sources:
+    {{source_definitions}}
+
+    Return JSON:
+    {
+      "definition": "Concise, accurate definition (1-2 sentences)",
+      "key_properties": ["property1", "property2"],
+      "common_misconceptions": ["misconception1"],
+      "confidence": 0.85
+    }
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Quality Control & Noise Detection
+# =============================================================================
+
+quality:
+  detect_noise: |
+    Evaluate if this extracted concept is likely noise (not a real domain concept).
+
+    Concept: {{concept_name}}
+    Context where found: {{context}}
+    Frequency: {{frequency}} occurrences
+    Co-occurs with: {{cooccurring_concepts}}
+
+    Noise indicators:
+    - Generic terms used as concepts (e.g., "example", "equation", "method")
+    - OCR artifacts or partial words
+    - Non-domain-specific terms
+    - Appears only once with low confidence
+
+    Return JSON:
+    {
+      "is_noise": true/false,
+      "confidence": 0.9,
+      "reason": "explanation",
+      "suggested_action": "delete|merge_with:concept_name|keep|review"
+    }
+
+    Return ONLY valid JSON.
+
+  validate_relation: |
+    Validate if this relationship makes sense in {{domain}}.
+
+    Relation: {{source}} --[{{relation_type}}]--> {{target}}
+    Evidence: {{evidence}}
+
+    Return JSON:
+    {
+      "is_valid": true/false,
+      "confidence": 0.8,
+      "reason": "explanation",
+      "suggested_correction": null or {"type": "new_type", "swap": false}
+    }
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Book-Level Analysis
+# =============================================================================
+
+book:
+  extract_toc: |
+    Extract the table of contents structure from these pages.
+
+    Pages text:
+    {{pages_text}}
+
+    Return JSON:
+    {
+      "chapters": [
+        {
+          "number": "1",
+          "title": "Introduction to Heat Transfer",
+          "page_start": 1,
+          "sections": [
+            {"number": "1.1", "title": "Conduction", "page_start": 5},
+            {"number": "1.2", "title": "Convection", "page_start": 15}
+          ]
+        }
+      ]
+    }
+
+    Return ONLY valid JSON.
+
+  summarize_chapter: |
+    Summarize the key concepts and learning objectives from this chapter.
+
+    Chapter: {{chapter_title}}
+    Content summary: {{content_summary}}
+    Extracted concepts: {{concepts}}
+
+    Return JSON:
+    {
+      "summary": "2-3 sentence summary",
+      "key_concepts": ["concept1", "concept2"],
+      "learning_objectives": ["objective1", "objective2"],
+      "prerequisites": ["prereq1"],
+      "difficulty": "introductory|intermediate|advanced"
+    }
+
+    Return ONLY valid JSON.
+
+# =============================================================================
+# Formula Extraction
+# =============================================================================
+
+formulas:
+  extract_detailed: |
+    Extract and analyze formulas/equations from this text.
+
+    Text: {{text}}
+    Context: {{section_title}}
+
+    Return JSON:
+    {
+      "formulas": [
+        {
+          "latex": "LaTeX representation",
+          "plain_text": "plain text fallback",
+          "label": "Equation label if present (e.g., 'Eq. 3.1')",
+          "name": "Named equation (e.g., 'Fourier's Law')",
+          "formula_type": "definition|derivation|result|constraint|approximation",
+          "defines_concept": "concept this formula defines",
+          "uses_concepts": ["concept1", "concept2"],
+          "variables": [
+            {
+              "symbol": "k",
+              "meaning": "thermal conductivity",
+              "units": "W/(m·K)",
+              "typical_values": "0.1-400 for common materials"
+            }
+          ],
+          "assumptions": ["steady state", "constant properties"],
+          "domain_of_validity": "description of when formula applies"
+        }
+      ]
+    }
+
+    Return ONLY valid JSON.
+
+  link_to_concepts: |
+    Link these formulas to concepts in the knowledge graph.
+
+    Formulas:
+    {{formulas}}
+
+    Available concepts:
+    {{concepts}}
+
+    Return JSON:
+    {
+      "links": [
+        {
+          "formula_label": "Eq. 3.1",
+          "defines": "heat_flux",
+          "uses": ["thermal_conductivity", "temperature_gradient"],
+          "related_to": ["fouriers_law", "conduction"]
+        }
+      ]
+    }
+
+    Return ONLY valid JSON.
